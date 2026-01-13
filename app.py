@@ -64,7 +64,20 @@ with st.sidebar:
     """)
     
     st.divider()
-    st.caption("v1.1 | Settlement: NWS Daily Climate Report")
+    
+    st.subheader("🎯 Prediction Method")
+    st.markdown("""
+    **Uses REAL NWS hourly data:**
+    1. Fetch today's readings
+    2. Calculate actual °F/hr rate
+    3. Project to peak (2-3 PM)
+    4. Add +1 to +2°F bias
+    
+    **Best after 10 AM** when heating pattern is clear
+    """)
+    
+    st.divider()
+    st.caption("v2.1 | Settlement: NWS Daily Climate Report")
 
 # ========== CITY CONFIGS ==========
 CITIES = {
@@ -232,6 +245,140 @@ def calc_market_forecast(brackets):
     if total_prob > 0:
         return round(weighted_sum / total_prob, 1)
     return None
+
+def fetch_nws_history(station_id="KNYC"):
+    """Fetch last 24 hours of NWS observations"""
+    url = f"https://api.weather.gov/stations/{station_id}/observations"
+    
+    try:
+        headers = {"User-Agent": "TempEdgeFinder/2.0"}
+        resp = requests.get(url, headers=headers, timeout=15)
+        if resp.status_code != 200:
+            return None
+        
+        data = resp.json()
+        features = data.get("features", [])
+        
+        readings = []
+        for f in features[:24]:  # Last 24 readings
+            props = f.get("properties", {})
+            temp_c = props.get("temperature", {}).get("value")
+            if temp_c is None:
+                continue
+            temp_f = (temp_c * 9/5) + 32
+            
+            timestamp = props.get("timestamp", "")
+            
+            readings.append({
+                "time": timestamp,
+                "temp": temp_f
+            })
+        
+        return readings
+    except:
+        return None
+
+def calc_heating_rate_and_predict(readings, city_tz):
+    """Calculate ACTUAL heating rate from NWS history and predict high"""
+    if not readings or len(readings) < 3:
+        return None, None, []
+    
+    local_tz = pytz.timezone(city_tz)
+    now = datetime.now(local_tz)
+    today_date = now.date()
+    
+    # Filter to TODAY only and convert times
+    today_readings = []
+    for r in readings:
+        try:
+            ts = datetime.fromisoformat(r['time'].replace('Z', '+00:00'))
+            ts_local = ts.astimezone(local_tz)
+            if ts_local.date() == today_date:
+                today_readings.append({
+                    "hour": ts_local.hour + ts_local.minute/60,
+                    "temp": r['temp'],
+                    "time_str": ts_local.strftime("%I:%M %p")
+                })
+        except:
+            continue
+    
+    if len(today_readings) < 2:
+        return None, None, []
+    
+    # Sort by hour
+    today_readings.sort(key=lambda x: x['hour'])
+    
+    factors = []
+    factors.append("**Today's NWS Readings:**")
+    for r in today_readings:
+        factors.append(f"  {r['time_str']}: {r['temp']:.1f}°F")
+    
+    # Find morning low and current high
+    morning_readings = [r for r in today_readings if r['hour'] < 10]
+    all_temps = [r['temp'] for r in today_readings]
+    
+    morning_low = min([r['temp'] for r in morning_readings]) if morning_readings else min(all_temps)
+    current_high = max(all_temps)
+    latest = today_readings[-1]
+    
+    factors.append(f"")
+    factors.append(f"**Morning Low:** {morning_low:.1f}°F")
+    factors.append(f"**Current High:** {current_high:.1f}°F")
+    factors.append(f"**Latest Reading:** {latest['temp']:.1f}°F @ {latest['time_str']}")
+    
+    # Calculate heating rate (using morning to latest if after 10 AM)
+    current_hour = now.hour + now.minute/60
+    
+    if current_hour >= 10 and len(today_readings) >= 3:
+        # Use readings from 8 AM onwards for rate calc
+        morning_start = next((r for r in today_readings if r['hour'] >= 7), today_readings[0])
+        
+        hours_elapsed = latest['hour'] - morning_start['hour']
+        temp_rise = latest['temp'] - morning_start['temp']
+        
+        if hours_elapsed > 0:
+            actual_rate = temp_rise / hours_elapsed
+        else:
+            actual_rate = 0
+        
+        factors.append(f"")
+        factors.append(f"**Heating Rate:** {actual_rate:.2f}°F/hr")
+        factors.append(f"  (From {morning_start['time_str']} to {latest['time_str']})")
+        
+        # Project to peak (typically 2-3 PM = hour 14-15)
+        peak_hour = 14.5  # 2:30 PM
+        hours_to_peak = max(0, peak_hour - current_hour)
+        
+        # Rate slows as we approach peak
+        if current_hour < 12:
+            rate_factor = 0.8  # Still heating strong
+        elif current_hour < 14:
+            rate_factor = 0.5  # Slowing down
+        else:
+            rate_factor = 0.2  # Near peak, minimal rise
+        
+        remaining_rise = actual_rate * hours_to_peak * rate_factor
+        
+        # Projected high = current high + remaining rise (if any)
+        projected_raw = max(current_high, latest['temp'] + remaining_rise)
+        
+        # Add bias correction (+1 to +2°F based on our testing)
+        projected_low = projected_raw + 1
+        projected_high = projected_raw + 2
+        
+        factors.append(f"")
+        factors.append(f"**Projection:**")
+        factors.append(f"  Hours to peak (~2:30 PM): {hours_to_peak:.1f}")
+        factors.append(f"  Rate factor: {rate_factor}")
+        factors.append(f"  Remaining rise: {remaining_rise:.1f}°F")
+        factors.append(f"  Raw projection: {projected_raw:.1f}°F")
+        factors.append(f"  **Bias-adjusted: {projected_low:.0f}-{projected_high:.0f}°F**")
+        
+        return projected_low, projected_high, factors
+    else:
+        factors.append(f"")
+        factors.append(f"⏳ Need more data (wait until after 10 AM)")
+        return None, None, factors
 
 def fetch_current_weather(lat, lon, station_id="KNYC"):
     """Fetch current weather from NWS (official Kalshi source!)"""
@@ -503,120 +650,96 @@ with st.spinner("Fetching weather from NWS..."):
     weather = fetch_current_weather(city_config['lat'], city_config['lon'], city_config.get('nws_station', 'KNYC'))
 
 # ========== NO EDGE FINDER ==========
-st.subheader("🎯 NO EDGE FINDER")
+st.subheader("💰 NO EDGE FINDER")
 
-if brackets and weather and weather['temp']:
-    current_temp = weather['temp']
+if brackets and nws_history:
+    pred_low, pred_high, _ = calc_heating_rate_and_predict(nws_history, city_config['tz'])
     
-    # Estimate final high based on current temp, time of day, and conditions
-    local_tz = pytz.timezone(city_config['tz'])
-    local_now = datetime.now(local_tz)
-    hour = local_now.hour + local_now.minute / 60
-    
-    # Simple projection: current temp + expected remaining rise
-    if hour < 10:
-        remaining_rise = 8  # Morning, lots of heating left
-    elif hour < 12:
-        remaining_rise = 5  # Late morning
-    elif hour < 14:
-        remaining_rise = 3  # Early afternoon
-    elif hour < 16:
-        remaining_rise = 1  # Late afternoon
-    else:
-        remaining_rise = 0  # Evening, high likely set
-    
-    # Adjust for clouds (cap heating)
-    if weather['cloud_cover'] and weather['cloud_cover'] >= 70:
-        remaining_rise *= 0.5
-    
-    projected_high = current_temp + remaining_rise
-    projected_rounded = round(projected_high)
-    
-    st.markdown(f"### 🌡️ Current: **{current_temp:.1f}°F** → Projected High: **{projected_high:.1f}°F** (rounds to {projected_rounded}°F)")
-    
-    if hour >= 16:
-        st.warning("⏰ After 4 PM — High likely already set. Market is probably settled.")
-    
-    # Find the WINNING bracket (highest YES price = market consensus)
-    winning_bracket = max(brackets, key=lambda x: x['yes_price'] if x['yes_price'] else 0)
-    
-    if winning_bracket['yes_price'] and winning_bracket['yes_price'] >= 90:
-        st.error(f"🏆 **{winning_bracket['range']}** already WON @ {winning_bracket['yes_price']:.0f}¢ YES — Market settled, no edge left!")
-        st.info("Come back tomorrow between 10 AM - 2 PM for live edge opportunities.")
-        no_edges = []
-    else:
-        # Market NOT settled yet — find NO edges
-        # Good NO = bracket FAR from projected high with cheap NO price (YES is high-ish but not 90%+)
-        no_edges = []
-        for b in brackets:
-            if b['midpoint'] and b['yes_price'] is not None:
-                yes_price = b['yes_price']
-                no_price = 100 - yes_price
-                
-                # Skip if market already settled this bracket (YES 90%+ or YES 5% or less)
-                if yes_price >= 90:
-                    continue  # This bracket likely won, NO is dead
-                if yes_price <= 5:
-                    continue  # NO already at 95¢+, already priced in
-                
-                # Calculate distance from projected high
-                distance = abs(b['midpoint'] - projected_high)
-                
-                # Good NO target = FAR from projected high
-                if distance >= 5:
-                    confidence = "HIGH"
-                    edge_score = 3
-                elif distance >= 3:
-                    confidence = "MEDIUM"
-                    edge_score = 2
-                elif distance >= 2:
-                    confidence = "LOW"
-                    edge_score = 1
-                else:
-                    confidence = "SKIP"
-                    edge_score = 0
-                
-                if edge_score > 0:
+    if pred_low and pred_high:
+        predicted_high = (pred_low + pred_high) / 2
+        
+        st.markdown(f"### 🌡️ Your Predicted High: **{pred_low:.0f}-{pred_high:.0f}°F**")
+        
+        local_tz = pytz.timezone(city_config['tz'])
+        local_now = datetime.now(local_tz)
+        hour = local_now.hour + local_now.minute / 60
+        
+        if hour >= 16:
+            st.warning("⏰ After 4 PM — High likely already set. Market is probably settled.")
+        
+        # Find the WINNING bracket (highest YES price = market consensus)
+        winning_bracket = max(brackets, key=lambda x: x['yes_price'] if x['yes_price'] else 0)
+        
+        if winning_bracket['yes_price'] and winning_bracket['yes_price'] >= 90:
+            st.error(f"🏆 **{winning_bracket['range']}** already WON @ {winning_bracket['yes_price']:.0f}¢ YES — Market settled, no edge left!")
+            st.info("Come back tomorrow between 10 AM - 2 PM for live edge opportunities.")
+            no_edges = []
+        else:
+            # Market NOT settled yet — find NO edges based on YOUR prediction
+            no_edges = []
+            for b in brackets:
+                if b['midpoint'] and b['yes_price'] is not None:
+                    yes_price = b['yes_price']
+                    no_price = 100 - yes_price
+                    
+                    # Skip if market already settled this bracket
+                    if yes_price >= 90 or yes_price <= 5:
+                        continue
+                    
+                    # Calculate distance from YOUR predicted high
+                    distance = abs(b['midpoint'] - predicted_high)
+                    
+                    # Is this bracket OUTSIDE your predicted range?
+                    if b['midpoint'] < pred_low - 1:
+                        direction = "BELOW your prediction"
+                        confidence = "HIGH" if distance >= 4 else "MEDIUM" if distance >= 2 else "LOW"
+                    elif b['midpoint'] > pred_high + 1:
+                        direction = "ABOVE your prediction"
+                        confidence = "HIGH" if distance >= 4 else "MEDIUM" if distance >= 2 else "LOW"
+                    else:
+                        continue  # Inside your predicted range, skip
+                    
                     no_edges.append({
                         'range': b['range'],
                         'midpoint': b['midpoint'],
                         'yes_price': yes_price,
                         'no_price': no_price,
                         'distance': distance,
-                        'confidence': confidence,
-                        'edge_score': edge_score
+                        'direction': direction,
+                        'confidence': confidence
                     })
-        
-        # Sort by edge score (highest first), then by NO price (cheaper = better value)
-        no_edges.sort(key=lambda x: (-x['edge_score'], x['no_price']))
-    
-    if no_edges:
-        st.markdown("### 💰 Best NO Opportunities")
-        st.caption("Buy NO on brackets FAR from projected high")
-        
-        for edge in no_edges:
-            if edge['confidence'] == "HIGH":
-                color = "#00ff00"
-                emoji = "🟢"
-            elif edge['confidence'] == "MEDIUM":
-                color = "#ffff00"
-                emoji = "🟡"
-            else:
-                color = "#ff8800"
-                emoji = "🟠"
             
-            col1, col2, col3, col4 = st.columns([2, 1, 1, 2])
-            col1.markdown(f"**{edge['range']}**")
-            col2.markdown(f"NO @ **{edge['no_price']:.0f}¢**")
-            col3.markdown(f"{edge['distance']:.1f}°F away")
-            col4.markdown(f"<span style='color:{color}'>{emoji} **{edge['confidence']}**</span>", unsafe_allow_html=True)
-    elif hour < 16:
-        st.info("No clear NO edges right now. Prices may be too settled or too uncertain.")
-    
-    st.divider()
+            # Sort by distance (furthest first)
+            no_edges.sort(key=lambda x: -x['distance'])
+        
+        if no_edges:
+            st.markdown("### 💰 Best NO Opportunities")
+            st.caption("Brackets OUTSIDE your predicted range")
+            
+            for edge in no_edges:
+                if edge['confidence'] == "HIGH":
+                    color = "#00ff00"
+                    emoji = "🟢"
+                elif edge['confidence'] == "MEDIUM":
+                    color = "#ffff00"
+                    emoji = "🟡"
+                else:
+                    color = "#ff8800"
+                    emoji = "🟠"
+                
+                col1, col2, col3, col4 = st.columns([2, 1, 2, 1])
+                col1.markdown(f"**{edge['range']}**")
+                col2.markdown(f"NO @ **{edge['no_price']:.0f}¢**")
+                col3.markdown(f"{edge['direction']}")
+                col4.markdown(f"<span style='color:{color}'>{emoji} **{edge['confidence']}**</span>", unsafe_allow_html=True)
+        elif hour < 16 and not (winning_bracket['yes_price'] and winning_bracket['yes_price'] >= 90):
+            st.info("No clear NO edges — your prediction aligns with market prices")
+    else:
+        st.info("⏳ Need more daytime data for prediction. Check back after 10 AM.")
 else:
-    st.warning("Need bracket data and weather to find NO edges")
-    st.divider()
+    st.warning("Need bracket data and NWS history to find NO edges")
+
+st.divider()
 
 # ========== MARKET OVERVIEW ==========
 st.subheader(f"📊 {city_config['name']} High Temp Market")
@@ -630,10 +753,54 @@ if brackets:
     market_forecast = calc_market_forecast(brackets)
     
     mc1, mc2, mc3 = st.columns(3)
-    mc1.metric("Market Forecast", f"{market_forecast}°F" if market_forecast else "—")
+    mc1.metric("Our Calculated Forecast", f"{market_forecast}°F" if market_forecast else "—")
     mc2.metric("Brackets Available", len(brackets))
-    mc3.metric("Current Temp", f"{weather['temp']:.0f}°F" if weather and weather['temp'] else "—")
     
+    # Use predicted temp
+    if weather and weather['temp']:
+        pred_temp, _, _ = predict_current_temp(weather, city_config['tz'])
+        display_temp = pred_temp if pred_temp else weather['temp']
+    else:
+        display_temp = None
+    mc3.metric("Predicted NOW", f"{display_temp:.1f}°F" if display_temp else "—")
+    
+    # Kalshi Internal Forecast comparison
+    st.markdown("---")
+    st.markdown("### 🔍 Kalshi Forecast Comparison")
+    st.caption("After buying 1 contract, enter Kalshi's internal forecast to find edge")
+    
+    kf1, kf2, kf3 = st.columns(3)
+    kalshi_internal = kf1.number_input("Kalshi Internal Forecast (°F)", 0.0, 120.0, 0.0, 0.1, 
+                                        help="Buy 1 contract on Kalshi to see their forecast, enter it here")
+    
+    if kalshi_internal > 0 and market_forecast:
+        formula_diff = market_forecast - kalshi_internal
+        kf2.metric("Our Formula vs Kalshi", f"{formula_diff:+.1f}°F",
+                  "✅ Formula matches!" if abs(formula_diff) < 0.5 else "❌ Formula off")
+        
+        if display_temp:
+            your_diff = display_temp - kalshi_internal
+            kf3.metric("Your Prediction vs Kalshi", f"{your_diff:+.1f}°F")
+            
+            # Edge recommendation
+            st.markdown("---")
+            if abs(your_diff) >= 2:
+                if your_diff < 0:
+                    st.success(f"🎯 **EDGE FOUND:** You predict {abs(your_diff):.1f}°F LOWER than Kalshi → **BUY NO on upper brackets!**")
+                else:
+                    st.success(f"🎯 **EDGE FOUND:** You predict {your_diff:.1f}°F HIGHER than Kalshi → **BUY NO on lower brackets!**")
+            elif abs(your_diff) >= 1:
+                if your_diff < 0:
+                    st.info(f"📊 Small edge: You predict {abs(your_diff):.1f}°F lower → Consider NO on upper brackets")
+                else:
+                    st.info(f"📊 Small edge: You predict {your_diff:.1f}°F higher → Consider NO on lower brackets")
+            else:
+                st.warning("⚖️ No edge — Your prediction matches Kalshi's forecast")
+    else:
+        kf2.caption("Enter Kalshi forecast to compare")
+        kf3.caption("—")
+    
+    st.markdown("---")
     st.markdown("### 📈 Live Bracket Prices")
     
     hcols = st.columns([2, 1, 1, 1, 1])
@@ -704,20 +871,65 @@ else:
 
 st.divider()
 
+# ========== HIGH PREDICTION (REAL DATA) ==========
+st.subheader("🎯 HIGH TEMP PREDICTION (Real Data)")
+
+with st.spinner("Fetching NWS hourly history..."):
+    nws_history = fetch_nws_history(city_config.get('nws_station', 'KNYC'))
+
+if nws_history:
+    pred_low, pred_high, pred_factors = calc_heating_rate_and_predict(nws_history, city_config['tz'])
+    
+    if pred_low and pred_high:
+        pc1, pc2, pc3 = st.columns(3)
+        pc1.metric("🎯 Predicted High", f"{pred_low:.0f}-{pred_high:.0f}°F")
+        pc2.metric("Kalshi Bracket", f"{pred_low:.0f}° to {pred_high:.0f}°")
+        
+        # Compare to market forecast if available
+        if brackets:
+            market_forecast = calc_market_forecast(brackets)
+            if market_forecast:
+                diff = ((pred_low + pred_high) / 2) - market_forecast
+                pc3.metric("vs Market Forecast", f"{diff:+.1f}°F", 
+                          "YOU SEE HIGHER" if diff > 0 else "YOU SEE LOWER" if diff < 0 else "MATCH")
+                
+                if abs(diff) >= 2:
+                    if diff < 0:
+                        st.success(f"🎯 **EDGE:** Your data says {abs(diff):.0f}°F LOWER than market → **BUY NO on {market_forecast:.0f}°F+ brackets!**")
+                    else:
+                        st.success(f"🎯 **EDGE:** Your data says {diff:.0f}°F HIGHER than market → **BUY NO on brackets below {pred_low:.0f}°F!**")
+        
+        with st.expander("📊 Calculation Breakdown", expanded=False):
+            for f in pred_factors:
+                st.markdown(f)
+    else:
+        st.info("⏳ Need more daytime data. Best predictions after 10 AM when heating pattern is established.")
+        if pred_factors:
+            with st.expander("📊 Data So Far", expanded=True):
+                for f in pred_factors:
+                    st.markdown(f)
+else:
+    st.warning("Could not fetch NWS history")
+
+st.divider()
+
 # ========== EDGE CALCULATOR ==========
 st.subheader("🎯 EDGE CALCULATOR")
 
 if brackets and len(brackets) > 0:
     st.caption("Select a bracket from today's Kalshi market")
     
-    # Show current temp prominently
+    # Use predicted temp if available
     if weather and weather['temp']:
-        current_temp = weather['temp']
-        rounded_temp = round(current_temp)  # Kalshi rounds to nearest whole number
-        st.markdown(f"### 🌡️ Current Temp: **{current_temp:.1f}°F** → Kalshi rounds to **{rounded_temp}°F**")
+        pred_temp, _, _ = predict_current_temp(weather, city_config['tz'])
+        current_temp = pred_temp if pred_temp else weather['temp']
     else:
         current_temp = 40.0
-        st.warning("Could not fetch current temperature")
+    
+    # Show current temp prominently
+    if current_temp:
+        rounded_temp = round(current_temp)
+        st.markdown(f"### 🌡️ Predicted NOW: **{current_temp:.1f}°F** → Kalshi rounds to **{rounded_temp}°F**")
     
     ec1, ec2 = st.columns([2, 1])
     
