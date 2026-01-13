@@ -127,8 +127,31 @@ def fetch_kalshi_temp_brackets(series_ticker):
         if not markets:
             return None, "No markets found for this series"
         
+        # Get today's date in Kalshi format (e.g., "26JAN13" or "JAN-13")
+        today_et = datetime.now(pytz.timezone('US/Eastern'))
+        today_str1 = today_et.strftime('%y%b%d').upper()  # "26JAN13"
+        today_str2 = today_et.strftime('%b-%d').upper()   # "JAN-13"
+        today_str3 = today_et.strftime('%Y-%m-%d')        # "2026-01-13"
+        
+        # Filter to only TODAY's markets
+        today_markets = []
+        for m in markets:
+            event_ticker = m.get("event_ticker", "").upper()
+            close_time = m.get("close_time", "")
+            # Check if event ticker contains today's date
+            if today_str1 in event_ticker or today_str2 in event_ticker or today_str3 in close_time[:10]:
+                today_markets.append(m)
+        
+        # If no today markets found, try first event (fallback)
+        if not today_markets and markets:
+            first_event = markets[0].get("event_ticker", "")
+            today_markets = [m for m in markets if m.get("event_ticker") == first_event]
+        
+        if not today_markets:
+            return None, "No markets found for today"
+        
         brackets = []
-        for market in markets:
+        for market in today_markets:
             ticker = market.get("ticker", "")
             title = market.get("title", "")
             subtitle = market.get("subtitle", "")
@@ -185,22 +208,22 @@ def fetch_kalshi_temp_brackets(series_ticker):
         return None, str(e)
 
 def calc_market_forecast(brackets):
-    """Calculate market forecast from bracket prices"""
+    """Calculate market forecast from bracket prices (probability-weighted average)"""
     if not brackets:
         return None
     
-    total_prob = 0
     weighted_sum = 0
     
     for b in brackets:
+        # Probability = yes_price / 100
         prob = b['yes_price'] / 100 if b['yes_price'] else 0
         midpoint = b['midpoint']
         if midpoint and prob > 0:
             weighted_sum += midpoint * prob
-            total_prob += prob
     
-    if total_prob > 0:
-        return round(weighted_sum / total_prob, 1) if total_prob < 0.5 else round(weighted_sum, 1)
+    # weighted_sum IS the forecast (expected value)
+    if weighted_sum > 0:
+        return round(weighted_sum, 1)
     return None
 
 def fetch_current_weather(lat, lon):
