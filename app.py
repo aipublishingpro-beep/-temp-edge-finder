@@ -152,7 +152,7 @@ def predict_high(readings, tz):
     am = [r for r in todays if 6 <= r['hr'] <= 12]
     
     info = ["**Morning Readings:**"]
-    for r in am:
+    for r in reversed(am):
         info.append(f"  {r['t']}: {r['temp']:.1f}°F")
     
     if len(am) < 2:
