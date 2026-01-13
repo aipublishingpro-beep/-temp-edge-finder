@@ -9,6 +9,7 @@ st.set_page_config(page_title="Temp Edge Finder", page_icon="🌡️", layout="w
 MIN_POINTS = 3
 MAX_REVERSAL = 1.2  # °F
 MAX_ZIGZAG_RATIO = 0.45
+DELTA_DEADBAND = 0.4  # °F — ignore sensor jitter
 
 # ========== SIDEBAR ==========
 with st.sidebar:
@@ -31,7 +32,7 @@ with st.sidebar:
     - Max zigzag ratio: 45%
     """)
     st.divider()
-    st.caption("v2.4 | Volatility Gate")
+    st.caption("v2.5 | Volatility Gate")
 
 # ========== CITIES ==========
 CITIES = {
@@ -53,10 +54,13 @@ def compute_deltas(am_readings):
 def compute_reversals(deltas):
     reversals = []
     for i in range(1, len(deltas)):
-        # Only count as reversal if both deltas are non-zero and opposite signs
-        if deltas[i] != 0 and deltas[i-1] != 0:
-            if (deltas[i] > 0) != (deltas[i-1] > 0):
-                reversals.append(abs(deltas[i]))
+        d1 = deltas[i-1]
+        d2 = deltas[i]
+        # Ignore sensor jitter below deadband
+        if abs(d1) < DELTA_DEADBAND or abs(d2) < DELTA_DEADBAND:
+            continue
+        if (d1 > 0) != (d2 > 0):
+            reversals.append(abs(d2))
     return reversals
 
 def volatility_gate(am_readings):
@@ -144,7 +148,7 @@ def calc_market_forecast(brackets):
         return None
     ws, tp = 0, 0
     for b in brackets:
-        if b['mid'] and b['yes']:
+        if b['mid'] and 5 <= b['yes'] <= 95:
             ws += b['mid'] * b['yes']
             tp += b['yes']
     return round(ws / tp, 1) if tp > 0 else None
@@ -152,7 +156,7 @@ def calc_market_forecast(brackets):
 def fetch_nws_history(station):
     url = f"https://api.weather.gov/stations/{station}/observations"
     try:
-        resp = requests.get(url, headers={"User-Agent": "Temp/2.4"}, timeout=15)
+        resp = requests.get(url, headers={"User-Agent": "Temp/2.5"}, timeout=15)
         if resp.status_code != 200:
             return None
         readings = []
@@ -168,7 +172,7 @@ def fetch_nws_history(station):
 def fetch_weather(station):
     url = f"https://api.weather.gov/stations/{station}/observations/latest"
     try:
-        resp = requests.get(url, headers={"User-Agent": "Temp/2.4"}, timeout=10)
+        resp = requests.get(url, headers={"User-Agent": "Temp/2.5"}, timeout=10)
         if resp.status_code == 200:
             p = resp.json().get("properties", {})
             tc = p.get("temperature", {}).get("value")
@@ -251,7 +255,7 @@ def predict_high(readings, tz):
 # ========== MAIN ==========
 now = datetime.now(pytz.timezone('US/Eastern'))
 st.title("🌡️ TEMP EDGE FINDER")
-st.caption(f"{now.strftime('%I:%M %p ET')} | v2.4 | Volatility Gate")
+st.caption(f"{now.strftime('%I:%M %p ET')} | v2.5 | Volatility Gate")
 
 city = st.selectbox("City", list(CITIES.keys()), format_func=lambda x: CITIES[x]['name'])
 cfg = CITIES[city]
@@ -343,7 +347,7 @@ if history:
                         if mkt_bracket:
                             st.markdown(f"❌ **BUY NO:** {mkt_bracket['range']} @ {100-mkt_bracket['yes']:.0f}¢")
                 else:
-                    st.info("No edge — your prediction matches market (within 2°F)")
+                    st.info("Market already priced correctly — discipline hold")
         
         with st.expander("📊 Calculation"):
             for i in info:
