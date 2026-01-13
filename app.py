@@ -287,13 +287,30 @@ if history:
                 diff = ((pred_low + pred_high) / 2) - mkt
                 
                 if diff < -2:
-                    p3.metric("Edge", f"{diff:+.1f}°F", "LOWER")
-                    st.success(f"🎯 BUY NO on {int(mkt)}°F+ brackets!")
+                    p3.metric("Edge", f"{diff:+.1f}°F", "YOU SEE LOWER")
+                    st.success(f"🎯 **EDGE FOUND!**")
+                    st.markdown(f"""
+                    ### 📍 ACTION:
+                    **BUY NO** on brackets **{int(mkt)}°F and above**
+                    
+                    OR
+                    
+                    **BUY YES** on brackets **{int(pred_low)}-{int(pred_high)}°F** (your prediction)
+                    """)
                 elif diff > 2:
-                    p3.metric("Edge", f"{diff:+.1f}°F", "HIGHER")
-                    st.success(f"🎯 BUY NO on brackets below {int(pred_low)}°F!")
+                    p3.metric("Edge", f"{diff:+.1f}°F", "YOU SEE HIGHER")
+                    st.success(f"🎯 **EDGE FOUND!**")
+                    st.markdown(f"""
+                    ### 📍 ACTION:
+                    **BUY NO** on brackets **{int(mkt)}°F and below**
+                    
+                    OR
+                    
+                    **BUY YES** on brackets **{int(pred_low)}-{int(pred_high)}°F** (your prediction)
+                    """)
                 else:
                     p3.metric("Edge", f"{diff:+.1f}°F", "NO EDGE")
+                    st.info("Your prediction matches market — no trade")
         
         with st.expander("📊 Details"):
             for f in factors:
