@@ -64,7 +64,7 @@ with st.sidebar:
     """)
     
     st.divider()
-    st.caption("v1.0 | Settlement: NWS Daily Climate Report")
+    st.caption("v1.1 | Settlement: NWS Daily Climate Report")
 
 # ========== CITY CONFIGS ==========
 CITIES = {
@@ -73,57 +73,48 @@ CITIES = {
         "lat": 40.7829,
         "lon": -73.9654,
         "tz": "America/New_York",
-        "kalshi_code": "KXHIGHNY",
-        "nws_station": "KNYC"
+        "series_ticker": "KXHIGHNY"
     },
     "Chicago": {
         "name": "Chicago (O'Hare)",
         "lat": 41.9742,
         "lon": -87.9073,
         "tz": "America/Chicago",
-        "kalshi_code": "KXHIGHCHI",
-        "nws_station": "KORD"
+        "series_ticker": "KXHIGHCHI"
     },
     "LA": {
         "name": "Los Angeles (LAX)",
         "lat": 33.9425,
         "lon": -118.4081,
         "tz": "America/Los_Angeles",
-        "kalshi_code": "KXHIGHLA",
-        "nws_station": "KLAX"
+        "series_ticker": "KXHIGHLA"
     },
     "Miami": {
         "name": "Miami",
         "lat": 25.7617,
         "lon": -80.1918,
         "tz": "America/New_York",
-        "kalshi_code": "KXHIGHMIA",
-        "nws_station": "KMIA"
+        "series_ticker": "KXHIGHMIA"
     },
     "Denver": {
         "name": "Denver",
         "lat": 39.8561,
         "lon": -104.6737,
         "tz": "America/Denver",
-        "kalshi_code": "KXHIGHDEN",
-        "nws_station": "KDEN"
+        "series_ticker": "KXHIGHDEN"
     },
     "Austin": {
         "name": "Austin",
         "lat": 30.1944,
         "lon": -97.6700,
         "tz": "America/Chicago",
-        "kalshi_code": "KXHIGHAUS",
-        "nws_station": "KAUS"
+        "series_ticker": "KXHIGHAUS"
     }
 }
 
-def fetch_kalshi_temp_brackets(city_code):
+def fetch_kalshi_temp_brackets(series_ticker):
     """Fetch live Kalshi temperature brackets - NO CORS in Streamlit!"""
-    today = datetime.now(pytz.timezone('US/Eastern')).strftime('%y%b%d').upper()
-    event_ticker = f"{city_code}-{today}"
-    
-    url = f"https://api.elections.kalshi.com/trade-api/v2/events/{event_ticker}"
+    url = f"https://api.elections.kalshi.com/trade-api/v2/markets?series_ticker={series_ticker}&status=open"
     
     try:
         resp = requests.get(url, timeout=10)
@@ -131,44 +122,44 @@ def fetch_kalshi_temp_brackets(city_code):
             return None, f"API returned {resp.status_code}"
         
         data = resp.json()
-        event = data.get("event", {})
-        markets = event.get("markets", [])
+        markets = data.get("markets", [])
         
         if not markets:
-            return None, "No markets found"
+            return None, "No markets found for this series"
         
         brackets = []
         for market in markets:
             ticker = market.get("ticker", "")
+            title = market.get("title", "")
             subtitle = market.get("subtitle", "")
             yes_bid = market.get("yes_bid", 0)
             yes_ask = market.get("yes_ask", 0)
             no_bid = market.get("no_bid", 0)
             no_ask = market.get("no_ask", 0)
             
-            # Parse range from subtitle (e.g., "41° to 42°" or "39° or below")
-            range_text = subtitle
+            range_text = subtitle if subtitle else title
             
-            # Calculate midpoint for forecast
             midpoint = None
-            if "or below" in subtitle.lower():
-                # e.g., "39° or below" -> use 38 as midpoint
+            range_lower = range_text.lower()
+            
+            if "or below" in range_lower or "under" in range_lower:
                 try:
-                    num = int(''.join(filter(str.isdigit, subtitle.split('°')[0])))
+                    num = int(''.join(filter(str.isdigit, range_text.split('°')[0].split()[-1])))
                     midpoint = num - 1
                 except:
                     midpoint = 30
-            elif "or above" in subtitle.lower():
-                # e.g., "47° or above" -> use 48 as midpoint
+            elif "or above" in range_lower or "over" in range_lower:
                 try:
-                    num = int(''.join(filter(str.isdigit, subtitle.split('°')[0])))
+                    num = int(''.join(filter(str.isdigit, range_text.split('°')[0].split()[-1])))
                     midpoint = num + 1
                 except:
                     midpoint = 50
-            elif "to" in subtitle.lower():
-                # e.g., "41° to 42°" -> use 41.5
+            elif "to" in range_lower or "-" in range_text:
                 try:
-                    parts = subtitle.replace('°', '').split('to')
+                    if "to" in range_lower:
+                        parts = range_text.replace('°', '').lower().split('to')
+                    else:
+                        parts = range_text.replace('°', '').split('-')
                     low = int(''.join(filter(str.isdigit, parts[0])))
                     high = int(''.join(filter(str.isdigit, parts[1])))
                     midpoint = (low + high) / 2
@@ -183,11 +174,10 @@ def fetch_kalshi_temp_brackets(city_code):
                 "yes_ask": yes_ask,
                 "no_bid": no_bid,
                 "no_ask": no_ask,
-                "yes_price": (yes_bid + yes_ask) / 2 if yes_bid and yes_ask else yes_ask or yes_bid,
-                "no_price": (no_bid + no_ask) / 2 if no_bid and no_ask else no_ask or no_bid
+                "yes_price": (yes_bid + yes_ask) / 2 if yes_bid and yes_ask else yes_ask or yes_bid or 0,
+                "no_price": (no_bid + no_ask) / 2 if no_bid and no_ask else no_ask or no_bid or 0
             })
         
-        # Sort by midpoint
         brackets.sort(key=lambda x: x['midpoint'] if x['midpoint'] else 0)
         
         return brackets, None
@@ -195,7 +185,7 @@ def fetch_kalshi_temp_brackets(city_code):
         return None, str(e)
 
 def calc_market_forecast(brackets):
-    """Calculate market forecast from bracket prices (probability-weighted average)"""
+    """Calculate market forecast from bracket prices"""
     if not brackets:
         return None
     
@@ -214,7 +204,7 @@ def calc_market_forecast(brackets):
     return None
 
 def fetch_current_weather(lat, lon):
-    """Fetch current weather from Open-Meteo (free, no API key)"""
+    """Fetch current weather from Open-Meteo"""
     url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,wind_speed_10m,wind_direction_10m,cloud_cover&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=auto"
     
     try:
@@ -245,7 +235,6 @@ def calc_edge_score(cushion, pace, hour, cloud_cover, wind_speed, wind_dir):
     score = 0
     breakdown = []
     
-    # Cushion score (max +4)
     if cushion >= 3.0:
         score += 4
         breakdown.append(f"Cushion +{cushion:.1f}°F → +4")
@@ -261,7 +250,6 @@ def calc_edge_score(cushion, pace, hour, cloud_cover, wind_speed, wind_dir):
     else:
         breakdown.append(f"Cushion +{cushion:.1f}°F → +0")
     
-    # Pace score (max +3)
     if pace <= 0.3:
         score += 3
         breakdown.append(f"Pace {pace:.2f}°F/hr (slow) → +3")
@@ -277,7 +265,6 @@ def calc_edge_score(cushion, pace, hour, cloud_cover, wind_speed, wind_dir):
         score -= 1
         breakdown.append(f"Pace {pace:.2f}°F/hr (fast!) → -1")
     
-    # Time window score (max +2)
     if hour < 10.5:
         breakdown.append(f"Time {hour:.1f}h (early noise) → +0")
     elif hour < 12:
@@ -290,7 +277,6 @@ def calc_edge_score(cushion, pace, hour, cloud_cover, wind_speed, wind_dir):
         score -= 1
         breakdown.append(f"Time {hour:.1f}h (late risk) → -1")
     
-    # Weather modifiers
     if cloud_cover and cloud_cover >= 70:
         score += 1
         breakdown.append(f"Clouds {cloud_cover}% (cap) → +1")
@@ -302,7 +288,6 @@ def calc_edge_score(cushion, pace, hour, cloud_cover, wind_speed, wind_dir):
         score += 1
         breakdown.append(f"Wind {wind_speed:.0f}mph → +1")
     
-    # Wind direction advection
     if wind_dir:
         dir_name = get_wind_direction_name(wind_dir)
         if dir_name in ["SW", "SSW", "WSW"]:
@@ -317,7 +302,7 @@ def calc_edge_score(cushion, pace, hour, cloud_cover, wind_speed, wind_dir):
 # ========== HEADER ==========
 now = datetime.now(pytz.timezone('US/Eastern'))
 st.title("🌡️ TEMPERATURE EDGE FINDER")
-st.caption(f"Last update: {now.strftime('%I:%M:%S %p ET')} | v1.0 | Kalshi High Temp Markets")
+st.caption(f"Last update: {now.strftime('%I:%M:%S %p ET')} | v1.1 | Kalshi High Temp Markets")
 
 # ========== CITY SELECTOR ==========
 col1, col2 = st.columns([2, 3])
@@ -326,7 +311,7 @@ city_config = CITIES[selected_city]
 
 # ========== FETCH DATA ==========
 with st.spinner("Fetching Kalshi brackets..."):
-    brackets, bracket_error = fetch_kalshi_temp_brackets(city_config['kalshi_code'])
+    brackets, bracket_error = fetch_kalshi_temp_brackets(city_config['series_ticker'])
 
 with st.spinner("Fetching weather..."):
     weather = fetch_current_weather(city_config['lat'], city_config['lon'])
@@ -349,7 +334,6 @@ if brackets:
     
     st.markdown("### 📈 Live Bracket Prices")
     
-    # Header row
     hcols = st.columns([2, 1, 1, 1, 1])
     hcols[0].markdown("**Range**")
     hcols[1].markdown("**Yes Bid**")
@@ -366,7 +350,6 @@ if brackets:
         no_bid = b['no_bid']
         no_ask = b['no_ask']
         
-        # Color code by probability
         if yes_bid and yes_bid >= 50:
             rcols[1].markdown(f"<span style='color:#00ff00'>**{yes_bid}¢**</span>", unsafe_allow_html=True)
         else:
@@ -398,34 +381,28 @@ st.caption("Enter your projection and target bracket to calculate edge")
 
 ec1, ec2, ec3 = st.columns(3)
 
-# Get baseline from weather if available
 default_current = weather['temp'] if weather and weather['temp'] else 40.0
 
 your_projection = ec1.number_input("Your High Temp Projection (°F)", 20.0, 100.0, default_current + 5, 0.5)
 target_bracket = ec2.number_input("Target Bracket Upper Bound (°F)", 20.0, 100.0, default_current + 8, 1.0)
 bet_side = ec3.selectbox("Bet Side", ["NO (Under)", "YES (Over)"])
 
-# Calculate hours since midnight for time score
 local_tz = pytz.timezone(city_config['tz'])
 local_now = datetime.now(local_tz)
 hours_since_midnight = local_now.hour + local_now.minute / 60
 
-# Estimate pace (if we have current temp and time)
 if weather and weather['temp'] and hours_since_midnight > 6:
-    # Rough estimate: assume started at current - some delta
-    baseline_estimate = weather['temp'] - 5  # Very rough
+    baseline_estimate = weather['temp'] - 5
     pace_estimate = (weather['temp'] - baseline_estimate) / max(1, hours_since_midnight - 6)
 else:
     pace_estimate = 0.5
 
-# Manual overrides
 with st.expander("⚙️ Adjust Pace & Conditions", expanded=False):
     pace_override = st.number_input("Pace (°F/hr)", 0.0, 3.0, pace_estimate, 0.1)
     cloud_override = st.number_input("Cloud Cover %", 0, 100, weather['cloud_cover'] if weather and weather['cloud_cover'] else 50)
     wind_override = st.number_input("Wind Speed (mph)", 0, 50, int(weather['wind_speed']) if weather and weather['wind_speed'] else 5)
     wind_dir_override = st.number_input("Wind Direction (°)", 0, 360, int(weather['wind_dir']) if weather and weather['wind_dir'] else 270)
 
-# Calculate edge
 if "NO" in bet_side:
     cushion = target_bracket - your_projection
 else:
@@ -440,7 +417,6 @@ edge_score, breakdown = calc_edge_score(
     wind_dir_override if 'wind_dir_override' in dir() else (weather['wind_dir'] if weather else 270)
 )
 
-# Display edge result
 st.markdown("### 📊 Edge Analysis")
 
 if edge_score >= 8:
@@ -461,29 +437,28 @@ rc1.markdown(f"<span style='font-size:2em;color:{edge_color}'><b>{edge_score}/10
 rc2.metric("Cushion", f"{cushion:+.1f}°F")
 rc3.metric("Your Projection", f"{your_projection}°F")
 
-# Breakdown
 with st.expander("📋 Score Breakdown", expanded=True):
     for item in breakdown:
         st.markdown(f"• {item}")
 
-# Market comparison
-if brackets and market_forecast:
-    diff = your_projection - market_forecast
-    st.markdown("---")
-    st.markdown(f"**Market Forecast:** {market_forecast}°F | **Your Projection:** {your_projection}°F | **Diff:** {diff:+.1f}°F")
-    
-    if abs(diff) >= 1:
-        if diff > 0:
-            st.info(f"📈 You predict **HIGHER** than market by {diff:.1f}°F → Look for **YES** edge on higher brackets")
-        else:
-            st.info(f"📉 You predict **LOWER** than market by {abs(diff):.1f}°F → Look for **NO** edge on higher brackets")
+if brackets:
+    market_forecast = calc_market_forecast(brackets)
+    if market_forecast:
+        diff = your_projection - market_forecast
+        st.markdown("---")
+        st.markdown(f"**Market Forecast:** {market_forecast}°F | **Your Projection:** {your_projection}°F | **Diff:** {diff:+.1f}°F")
+        
+        if abs(diff) >= 1:
+            if diff > 0:
+                st.info(f"📈 You predict **HIGHER** than market by {diff:.1f}°F → Look for **YES** edge on higher brackets")
+            else:
+                st.info(f"📉 You predict **LOWER** than market by {abs(diff):.1f}°F → Look for **NO** edge on higher brackets")
 
 st.divider()
 
 # ========== POSITION TRACKER ==========
 st.subheader("📈 ACTIVE POSITIONS")
 
-# Add position form
 with st.expander("➕ Add Position", expanded=False):
     pc1, pc2, pc3, pc4 = st.columns(4)
     pos_city = pc1.selectbox("City", list(CITIES.keys()), key="pos_city")
@@ -507,30 +482,28 @@ with st.expander("➕ Add Position", expanded=False):
         })
         st.rerun()
 
-# Display positions
 if st.session_state.temp_positions:
     for idx, pos in enumerate(st.session_state.temp_positions):
         pos_weather = fetch_current_weather(CITIES[pos['city']]['lat'], CITIES[pos['city']]['lon'])
         current_temp = pos_weather['temp'] if pos_weather and pos_weather['temp'] else None
         
-        # Calculate cushion
         if current_temp:
             if pos['side'] == "NO":
-                cushion = pos['target'] - current_temp
+                pos_cushion = pos['target'] - current_temp
             else:
-                cushion = current_temp - pos['target']
+                pos_cushion = current_temp - pos['target']
             
-            if cushion > 5:
-                status = f"🟢 +{cushion:.1f}°F"
-            elif cushion > 2:
-                status = f"🟡 +{cushion:.1f}°F"
-            elif cushion > 0:
-                status = f"🟠 +{cushion:.1f}°F"
+            if pos_cushion > 5:
+                status = f"🟢 +{pos_cushion:.1f}°F"
+            elif pos_cushion > 2:
+                status = f"🟡 +{pos_cushion:.1f}°F"
+            elif pos_cushion > 0:
+                status = f"🟠 +{pos_cushion:.1f}°F"
             else:
-                status = f"🔴 {cushion:+.1f}°F"
+                status = f"🔴 {pos_cushion:+.1f}°F"
         else:
             status = "⏳"
-            cushion = 0
+            pos_cushion = 0
         
         c1, c2, c3, c4, c5 = st.columns([2, 2, 1, 2, 1])
         c1.markdown(f"**{pos['city']}** {pos['bracket']}")
@@ -541,7 +514,6 @@ if st.session_state.temp_positions:
             st.session_state.temp_positions.pop(idx)
             st.rerun()
     
-    # Summary
     total_risk = sum(p['price'] * p['contracts'] for p in st.session_state.temp_positions) / 100
     total_potential = sum((100 - p['price']) * p['contracts'] for p in st.session_state.temp_positions) / 100
     
@@ -576,7 +548,7 @@ if manual_brackets and st.button("Parse Manual Brackets"):
                 parsed.append({
                     "range": range_text,
                     "yes_price": yes_price,
-                    "midpoint": 40  # Would need proper parsing
+                    "midpoint": 40
                 })
             except:
                 pass
@@ -586,7 +558,6 @@ if manual_brackets and st.button("Parse Manual Brackets"):
         for p in parsed:
             st.write(f"• {p['range']}: {p['yes_price']}¢")
         
-        # Calculate manual forecast
         total = sum(p['yes_price'] for p in parsed)
         st.info(f"Total probability: {total}% (should be ~100%)")
 
