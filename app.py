@@ -404,6 +404,15 @@ st.subheader("🎯 EDGE CALCULATOR")
 if brackets and len(brackets) > 0:
     st.caption("Select a bracket from today's Kalshi market")
     
+    # Show current temp prominently
+    if weather and weather['temp']:
+        current_temp = weather['temp']
+        rounded_temp = round(current_temp)  # Kalshi rounds to nearest whole number
+        st.markdown(f"### 🌡️ Current Temp: **{current_temp:.1f}°F** → Kalshi rounds to **{rounded_temp}°F**")
+    else:
+        current_temp = 40.0
+        st.warning("Could not fetch current temperature")
+    
     ec1, ec2 = st.columns([2, 1])
     
     # Dropdown with real brackets
@@ -423,9 +432,12 @@ if brackets and len(brackets) > 0:
         bc3.metric("No Price", f"{100 - selected_bracket['yes_price']:.0f}¢" if selected_bracket['yes_price'] else "—")
         bc4.metric("Midpoint", f"{selected_bracket['midpoint']}°F" if selected_bracket['midpoint'] else "—")
         
-        # User projection input
-        default_current = weather['temp'] if weather and weather['temp'] else 40.0
-        your_projection = st.number_input("Your High Temp Projection (°F)", 20.0, 100.0, default_current + 3, 0.5)
+        # User projection input - default to current temp + expected rise
+        your_projection = st.number_input("Your High Temp Projection (°F)", 20.0, 100.0, current_temp + 3, 0.5)
+        
+        # Show what Kalshi will round your projection to
+        your_rounded = round(your_projection)
+        st.caption(f"💡 Your projection {your_projection}°F → Kalshi rounds to **{your_rounded}°F**")
         
         # Calculate cushion based on bracket and bet side
         if selected_bracket['midpoint']:
@@ -443,9 +455,9 @@ if brackets and len(brackets) > 0:
             target_bracket = 45
 else:
     st.warning("No brackets loaded. Check Kalshi data above or use manual entry below.")
-    default_current = weather['temp'] if weather and weather['temp'] else 40.0
-    your_projection = st.number_input("Your High Temp Projection (°F)", 20.0, 100.0, default_current + 5, 0.5)
-    target_bracket = st.number_input("Target Bracket (°F)", 20.0, 100.0, default_current + 8, 1.0)
+    current_temp = weather['temp'] if weather and weather['temp'] else 40.0
+    your_projection = st.number_input("Your High Temp Projection (°F)", 20.0, 100.0, current_temp + 5, 0.5)
+    target_bracket = st.number_input("Target Bracket (°F)", 20.0, 100.0, current_temp + 8, 1.0)
     bet_side = st.selectbox("Bet Side", ["NO (Under)", "YES (Over)"])
     if "NO" in bet_side:
         cushion = target_bracket - your_projection
