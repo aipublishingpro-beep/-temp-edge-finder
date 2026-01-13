@@ -5,6 +5,11 @@ import pytz
 
 st.set_page_config(page_title="Temp Edge Finder", page_icon="🌡️", layout="wide")
 
+# ========== VOLATILITY GATE CONSTANTS ==========
+MIN_POINTS = 3
+MAX_REVERSAL = 1.2  # °F
+MAX_ZIGZAG_RATIO = 0.45
+
 # ========== SIDEBAR ==========
 with st.sidebar:
     st.header("📖 LEGEND")
@@ -18,9 +23,15 @@ with st.sidebar:
     **Your pred HIGHER than market:**
     - BUY YES on YOUR bracket  
     - BUY NO on lower brackets
+    
+    ---
+    **Volatility Gate:**
+    - Blocks erratic days
+    - Max reversal: 1.2°F
+    - Max zigzag ratio: 45%
     """)
     st.divider()
-    st.caption("v2.3 | Morning Data Only")
+    st.caption("v2.4 | Volatility Gate")
 
 # ========== CITIES ==========
 CITIES = {
@@ -31,7 +42,58 @@ CITIES = {
     "Denver": {"name": "Denver", "tz": "America/Denver", "series_ticker": "KXHIGHDEN", "nws_station": "KDEN"},
 }
 
-# ========== FUNCTIONS ==========
+# ========== VOLATILITY GATE FUNCTIONS ==========
+def compute_deltas(am_readings):
+    deltas = []
+    for i in range(1, len(am_readings)):
+        delta = am_readings[i]['temp'] - am_readings[i-1]['temp']
+        deltas.append(delta)
+    return deltas
+
+def compute_reversals(deltas):
+    reversals = []
+    for i in range(1, len(deltas)):
+        # Only count as reversal if both deltas are non-zero and opposite signs
+        if deltas[i] != 0 and deltas[i-1] != 0:
+            if (deltas[i] > 0) != (deltas[i-1] > 0):
+                reversals.append(abs(deltas[i]))
+    return reversals
+
+def volatility_gate(am_readings):
+    """
+    Returns: (status, reason, diagnostics)
+    status: True = ALLOW, False = BLOCK
+    """
+    diagnostics = {}
+    
+    if len(am_readings) < MIN_POINTS:
+        return False, "Insufficient morning data", diagnostics
+    
+    deltas = compute_deltas(am_readings)
+    total_move = abs(am_readings[-1]['temp'] - am_readings[0]['temp'])
+    diagnostics['total_move'] = total_move
+    
+    if total_move == 0:
+        return False, "Flat morning — no trend", diagnostics
+    
+    reversals = compute_reversals(deltas)
+    max_reversal = max(reversals) if reversals else 0
+    zigzag_magnitude = sum(reversals)
+    zigzag_ratio = zigzag_magnitude / total_move if total_move > 0 else 0
+    
+    diagnostics['max_reversal'] = max_reversal
+    diagnostics['zigzag_ratio'] = zigzag_ratio
+    diagnostics['reversal_count'] = len(reversals)
+    
+    if max_reversal > MAX_REVERSAL:
+        return False, f"Large reversal: {max_reversal:.1f}°F", diagnostics
+    
+    if zigzag_ratio > MAX_ZIGZAG_RATIO:
+        return False, f"Erratic movement: {zigzag_ratio:.0%} zigzag", diagnostics
+    
+    return True, "Smooth trend ✓", diagnostics
+
+# ========== API FUNCTIONS ==========
 def fetch_kalshi_brackets(series_ticker):
     url = f"https://api.elections.kalshi.com/trade-api/v2/markets?series_ticker={series_ticker}&status=open"
     try:
@@ -90,7 +152,7 @@ def calc_market_forecast(brackets):
 def fetch_nws_history(station):
     url = f"https://api.weather.gov/stations/{station}/observations"
     try:
-        resp = requests.get(url, headers={"User-Agent": "Temp/2.3"}, timeout=15)
+        resp = requests.get(url, headers={"User-Agent": "Temp/2.4"}, timeout=15)
         if resp.status_code != 200:
             return None
         readings = []
@@ -106,7 +168,7 @@ def fetch_nws_history(station):
 def fetch_weather(station):
     url = f"https://api.weather.gov/stations/{station}/observations/latest"
     try:
-        resp = requests.get(url, headers={"User-Agent": "Temp/2.3"}, timeout=10)
+        resp = requests.get(url, headers={"User-Agent": "Temp/2.4"}, timeout=10)
         if resp.status_code == 200:
             p = resp.json().get("properties", {})
             tc = p.get("temperature", {}).get("value")
@@ -128,7 +190,7 @@ def fetch_weather(station):
 
 def predict_high(readings, tz):
     if not readings or len(readings) < 2:
-        return None, None, []
+        return None, None, [], None
     
     local_tz = pytz.timezone(tz)
     now = datetime.now(local_tz)
@@ -144,7 +206,7 @@ def predict_high(readings, tz):
             continue
     
     if len(todays) < 2:
-        return None, None, ["Need more data"]
+        return None, None, ["Need more data"], None
     
     todays.sort(key=lambda x: x['hr'])
     
@@ -157,8 +219,16 @@ def predict_high(readings, tz):
     
     if len(am) < 2:
         info.append("⏳ Need morning data")
-        return None, None, info
+        return None, None, info, None
     
+    # ========== VOLATILITY GATE ==========
+    gate_pass, gate_reason, gate_diag = volatility_gate(am)
+    
+    if not gate_pass:
+        info.append(f"**⛔ BLOCKED:** {gate_reason}")
+        return None, None, info, {"pass": False, "reason": gate_reason, **gate_diag}
+    
+    # ========== RATE CALCULATION ==========
     start, end = am[0], am[-1]
     hrs = end['hr'] - start['hr']
     rate = (end['temp'] - start['temp']) / hrs if hrs > 0 else 1.5
@@ -176,12 +246,12 @@ def predict_high(readings, tz):
     
     info.append(f"**Projection:** {low:.0f}-{high:.0f}°F")
     
-    return low, high, info
+    return low, high, info, {"pass": True, "reason": gate_reason, **gate_diag}
 
 # ========== MAIN ==========
 now = datetime.now(pytz.timezone('US/Eastern'))
 st.title("🌡️ TEMP EDGE FINDER")
-st.caption(f"{now.strftime('%I:%M %p ET')} | v2.3")
+st.caption(f"{now.strftime('%I:%M %p ET')} | v2.4 | Volatility Gate")
 
 city = st.selectbox("City", list(CITIES.keys()), format_func=lambda x: CITIES[x]['name'])
 cfg = CITIES[city]
@@ -206,7 +276,25 @@ st.divider()
 st.subheader("🎯 YOUR PREDICTION")
 
 if history:
-    pred_low, pred_high, info = predict_high(history, cfg['tz'])
+    pred_low, pred_high, info, gate_result = predict_high(history, cfg['tz'])
+    
+    # Show gate status
+    if gate_result:
+        if gate_result['pass']:
+            st.success(f"✅ **GATE: PASS** — {gate_result['reason']}")
+        else:
+            st.error(f"⛔ **NO TRADE DAY** — {gate_result['reason']}")
+        
+        # Gate diagnostics
+        with st.expander("🔍 Volatility Diagnostics"):
+            if 'total_move' in gate_result:
+                st.write(f"**Total morning move:** {gate_result['total_move']:.1f}°F")
+            if 'max_reversal' in gate_result:
+                st.write(f"**Max reversal:** {gate_result['max_reversal']:.1f}°F (limit: {MAX_REVERSAL}°F)")
+            if 'zigzag_ratio' in gate_result:
+                st.write(f"**Zigzag ratio:** {gate_result['zigzag_ratio']:.0%} (limit: {MAX_ZIGZAG_RATIO:.0%})")
+            if 'reversal_count' in gate_result:
+                st.write(f"**Reversal count:** {gate_result['reversal_count']}")
     
     if pred_low and pred_high:
         pred_mid = (pred_low + pred_high) / 2
@@ -216,7 +304,6 @@ if history:
         if brackets:
             for b in brackets:
                 if b['mid']:
-                    # Check if prediction midpoint is within this bracket range
                     if b['mid'] - 1 <= pred_mid <= b['mid'] + 1:
                         your_bracket = b
                         break
@@ -262,7 +349,8 @@ if history:
             for i in info:
                 st.markdown(i)
     else:
-        st.warning("⏳ Need morning data (after 9 AM)")
+        if not gate_result or gate_result.get('pass', True):
+            st.warning("⏳ Need morning data (after 9 AM)")
         with st.expander("Data"):
             for i in info:
                 st.markdown(i)
