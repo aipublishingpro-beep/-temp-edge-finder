@@ -372,50 +372,64 @@ if brackets and weather and weather['temp']:
     st.markdown(f"### 🌡️ Current: **{current_temp:.1f}°F** → Projected High: **{projected_high:.1f}°F** (rounds to {projected_rounded}°F)")
     
     if hour >= 16:
-        st.info("⏰ After 4 PM — High likely already set. Limited edge remaining.")
+        st.warning("⏰ After 4 PM — High likely already set. Market is probably settled.")
     
-    # Find NO edges
-    no_edges = []
-    for b in brackets:
-        if b['midpoint'] and b['yes_price']:
-            yes_price = b['yes_price']
-            no_price = 100 - yes_price
-            
-            # Calculate distance from projected high
-            distance = abs(b['midpoint'] - projected_high)
-            
-            # Determine if this bracket is likely to lose (good NO target)
-            # If projected high is far from this bracket, NO should win
-            if distance >= 4:
-                confidence = "HIGH"
-                edge_score = 3
-            elif distance >= 2:
-                confidence = "MEDIUM"
-                edge_score = 2
-            elif distance >= 1:
-                confidence = "LOW"
-                edge_score = 1
-            else:
-                confidence = "SKIP"
-                edge_score = 0
-            
-            # Only show if NO price is reasonable (not already 99¢)
-            if no_price <= 95 and edge_score > 0:
-                no_edges.append({
-                    'range': b['range'],
-                    'midpoint': b['midpoint'],
-                    'yes_price': yes_price,
-                    'no_price': no_price,
-                    'distance': distance,
-                    'confidence': confidence,
-                    'edge_score': edge_score
-                })
+    # Find the WINNING bracket (highest YES price = market consensus)
+    winning_bracket = max(brackets, key=lambda x: x['yes_price'] if x['yes_price'] else 0)
     
-    # Sort by edge score (highest first), then by distance
-    no_edges.sort(key=lambda x: (-x['edge_score'], -x['distance']))
+    if winning_bracket['yes_price'] and winning_bracket['yes_price'] >= 90:
+        st.error(f"🏆 **{winning_bracket['range']}** already WON @ {winning_bracket['yes_price']:.0f}¢ YES — Market settled, no edge left!")
+        st.info("Come back tomorrow between 10 AM - 2 PM for live edge opportunities.")
+        no_edges = []
+    else:
+        # Market NOT settled yet — find NO edges
+        # Good NO = bracket FAR from projected high with cheap NO price (YES is high-ish but not 90%+)
+        no_edges = []
+        for b in brackets:
+            if b['midpoint'] and b['yes_price'] is not None:
+                yes_price = b['yes_price']
+                no_price = 100 - yes_price
+                
+                # Skip if market already settled this bracket (YES 90%+ or YES 5% or less)
+                if yes_price >= 90:
+                    continue  # This bracket likely won, NO is dead
+                if yes_price <= 5:
+                    continue  # NO already at 95¢+, already priced in
+                
+                # Calculate distance from projected high
+                distance = abs(b['midpoint'] - projected_high)
+                
+                # Good NO target = FAR from projected high
+                if distance >= 5:
+                    confidence = "HIGH"
+                    edge_score = 3
+                elif distance >= 3:
+                    confidence = "MEDIUM"
+                    edge_score = 2
+                elif distance >= 2:
+                    confidence = "LOW"
+                    edge_score = 1
+                else:
+                    confidence = "SKIP"
+                    edge_score = 0
+                
+                if edge_score > 0:
+                    no_edges.append({
+                        'range': b['range'],
+                        'midpoint': b['midpoint'],
+                        'yes_price': yes_price,
+                        'no_price': no_price,
+                        'distance': distance,
+                        'confidence': confidence,
+                        'edge_score': edge_score
+                    })
+        
+        # Sort by edge score (highest first), then by NO price (cheaper = better value)
+        no_edges.sort(key=lambda x: (-x['edge_score'], x['no_price']))
     
     if no_edges:
         st.markdown("### 💰 Best NO Opportunities")
+        st.caption("Buy NO on brackets FAR from projected high")
         
         for edge in no_edges:
             if edge['confidence'] == "HIGH":
@@ -432,9 +446,9 @@ if brackets and weather and weather['temp']:
             col1.markdown(f"**{edge['range']}**")
             col2.markdown(f"NO @ **{edge['no_price']:.0f}¢**")
             col3.markdown(f"{edge['distance']:.1f}°F away")
-            col4.markdown(f"<span style='color:{color}'>{emoji} **{edge['confidence']}** confidence</span>", unsafe_allow_html=True)
-    else:
-        st.info("No clear NO edges right now. Either market is settled (99¢) or projected high is uncertain.")
+            col4.markdown(f"<span style='color:{color}'>{emoji} **{edge['confidence']}**</span>", unsafe_allow_html=True)
+    elif hour < 16:
+        st.info("No clear NO edges right now. Prices may be too settled or too uncertain.")
     
     st.divider()
 else:
