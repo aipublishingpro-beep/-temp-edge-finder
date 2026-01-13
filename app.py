@@ -73,42 +73,48 @@ CITIES = {
         "lat": 40.7829,
         "lon": -73.9654,
         "tz": "America/New_York",
-        "series_ticker": "KXHIGHNY"
+        "series_ticker": "KXHIGHNY",
+        "nws_station": "KNYC"
     },
     "Chicago": {
         "name": "Chicago (O'Hare)",
         "lat": 41.9742,
         "lon": -87.9073,
         "tz": "America/Chicago",
-        "series_ticker": "KXHIGHCHI"
+        "series_ticker": "KXHIGHCHI",
+        "nws_station": "KORD"
     },
     "LA": {
         "name": "Los Angeles (LAX)",
         "lat": 33.9425,
         "lon": -118.4081,
         "tz": "America/Los_Angeles",
-        "series_ticker": "KXHIGHLA"
+        "series_ticker": "KXHIGHLA",
+        "nws_station": "KLAX"
     },
     "Miami": {
         "name": "Miami",
         "lat": 25.7617,
         "lon": -80.1918,
         "tz": "America/New_York",
-        "series_ticker": "KXHIGHMIA"
+        "series_ticker": "KXHIGHMIA",
+        "nws_station": "KMIA"
     },
     "Denver": {
         "name": "Denver",
         "lat": 39.8561,
         "lon": -104.6737,
         "tz": "America/Denver",
-        "series_ticker": "KXHIGHDEN"
+        "series_ticker": "KXHIGHDEN",
+        "nws_station": "KDEN"
     },
     "Austin": {
         "name": "Austin",
         "lat": 30.1944,
         "lon": -97.6700,
         "tz": "America/Chicago",
-        "series_ticker": "KXHIGHAUS"
+        "series_ticker": "KXHIGHAUS",
+        "nws_station": "KAUS"
     }
 }
 
@@ -213,22 +219,76 @@ def calc_market_forecast(brackets):
         return None
     
     weighted_sum = 0
+    total_prob = 0
     
     for b in brackets:
-        # Probability = yes_price / 100
-        prob = b['yes_price'] / 100 if b['yes_price'] else 0
+        yes_price = b['yes_price'] if b['yes_price'] else 0
         midpoint = b['midpoint']
-        if midpoint and prob > 0:
-            weighted_sum += midpoint * prob
+        if midpoint and yes_price > 0:
+            weighted_sum += midpoint * yes_price
+            total_prob += yes_price
     
-    # weighted_sum IS the forecast (expected value)
-    if weighted_sum > 0:
-        return round(weighted_sum, 1)
+    # NORMALIZE by total probability (prices may not sum to exactly 100)
+    if total_prob > 0:
+        return round(weighted_sum / total_prob, 1)
     return None
 
-def fetch_current_weather(lat, lon):
-    """Fetch current weather from Open-Meteo"""
-    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,wind_speed_10m,wind_direction_10m,cloud_cover&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=auto"
+def fetch_current_weather(lat, lon, station_id="KNYC"):
+    """Fetch current weather from NWS (official Kalshi source!)"""
+    # Try NWS API first (official source)
+    nws_url = f"https://api.weather.gov/stations/{station_id}/observations/latest"
+    
+    try:
+        headers = {"User-Agent": "TempEdgeFinder/1.0"}
+        resp = requests.get(nws_url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            props = data.get("properties", {})
+            
+            # NWS gives temp in Celsius, convert to F
+            temp_c = props.get("temperature", {}).get("value")
+            temp_f = (temp_c * 9/5) + 32 if temp_c is not None else None
+            
+            # Get dew point
+            dewpoint_c = props.get("dewpoint", {}).get("value")
+            dewpoint_f = (dewpoint_c * 9/5) + 32 if dewpoint_c is not None else None
+            
+            wind_speed_mps = props.get("windSpeed", {}).get("value")
+            wind_speed_mph = wind_speed_mps * 2.237 if wind_speed_mps else None
+            
+            wind_dir = props.get("windDirection", {}).get("value")
+            
+            # Get observation timestamp
+            obs_time = props.get("timestamp", "")
+            
+            # NWS doesn't give cloud % directly, but we can get text description
+            text_desc = props.get("textDescription", "")
+            if "clear" in text_desc.lower() or "sunny" in text_desc.lower():
+                cloud_cover = 10
+            elif "partly" in text_desc.lower():
+                cloud_cover = 40
+            elif "mostly cloudy" in text_desc.lower():
+                cloud_cover = 70
+            elif "cloudy" in text_desc.lower() or "overcast" in text_desc.lower():
+                cloud_cover = 90
+            else:
+                cloud_cover = 50
+            
+            return {
+                "temp": temp_f,
+                "dewpoint": dewpoint_f,
+                "wind_speed": wind_speed_mph,
+                "wind_dir": wind_dir,
+                "cloud_cover": cloud_cover,
+                "source": "NWS (Official)",
+                "description": text_desc,
+                "obs_time": obs_time
+            }
+    except Exception as e:
+        pass
+    
+    # Fallback to Open-Meteo if NWS fails
+    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,wind_speed_10m,wind_direction_10m,cloud_cover,dew_point_2m&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=auto"
     
     try:
         resp = requests.get(url, timeout=10)
@@ -237,13 +297,116 @@ def fetch_current_weather(lat, lon):
         
         return {
             "temp": current.get("temperature_2m"),
+            "dewpoint": current.get("dew_point_2m"),
             "wind_speed": current.get("wind_speed_10m"),
             "wind_dir": current.get("wind_direction_10m"),
             "cloud_cover": current.get("cloud_cover"),
-            "time": current.get("time")
+            "source": "Open-Meteo (Backup)",
+            "description": "",
+            "obs_time": current.get("time", "")
         }
     except:
         return None
+
+def predict_current_temp(weather, city_tz):
+    """Predict REAL current temp by interpolating from last NWS reading"""
+    if not weather or not weather.get('temp'):
+        return None, None, []
+    
+    last_temp = weather['temp']
+    cloud_cover = weather.get('cloud_cover', 50)
+    wind_dir = weather.get('wind_dir')
+    dewpoint = weather.get('dewpoint')
+    obs_time_str = weather.get('obs_time', '')
+    
+    factors = []
+    
+    # Get current time and observation time
+    local_tz = pytz.timezone(city_tz)
+    now = datetime.now(local_tz)
+    hour = now.hour + now.minute / 60
+    
+    # Parse observation time
+    if obs_time_str:
+        try:
+            obs_time = datetime.fromisoformat(obs_time_str.replace('Z', '+00:00'))
+            obs_time_local = obs_time.astimezone(local_tz)
+            minutes_since_obs = (now - obs_time_local).total_seconds() / 60
+        except:
+            minutes_since_obs = 30  # Assume 30 min if can't parse
+    else:
+        minutes_since_obs = 30
+    
+    factors.append(f"Last NWS reading: {minutes_since_obs:.0f} min ago")
+    
+    # Base heating rate by time of day
+    if hour < 6:
+        base_rate = -0.5  # Cooling overnight
+        factors.append(f"Time {hour:.1f}h: Pre-dawn cooling (-0.5°F/hr)")
+    elif hour < 10:
+        base_rate = 1.5  # Morning warming
+        factors.append(f"Time {hour:.1f}h: Morning warming (+1.5°F/hr)")
+    elif hour < 14:
+        base_rate = 0.8  # Peak sun
+        factors.append(f"Time {hour:.1f}h: Peak heating (+0.8°F/hr)")
+    elif hour < 17:
+        base_rate = 0.0  # Plateau
+        factors.append(f"Time {hour:.1f}h: Afternoon plateau (0°F/hr)")
+    else:
+        base_rate = -0.3  # Evening cooling
+        factors.append(f"Time {hour:.1f}h: Evening cooling (-0.3°F/hr)")
+    
+    # Adjust for cloud cover
+    if cloud_cover >= 80:
+        cloud_factor = 0.3  # Heavy clouds = 30% of normal heating
+        factors.append(f"Clouds {cloud_cover}%: Heavy cap (×0.3)")
+    elif cloud_cover >= 50:
+        cloud_factor = 0.6  # Partial clouds
+        factors.append(f"Clouds {cloud_cover}%: Partial cap (×0.6)")
+    else:
+        cloud_factor = 1.0  # Clear
+        factors.append(f"Clouds {cloud_cover}%: Clear sky (×1.0)")
+    
+    # Adjust for wind direction (advection)
+    advection_adj = 0
+    if wind_dir:
+        dir_name = get_wind_direction_name(wind_dir)
+        if dir_name in ["SW", "SSW", "S", "SSE"]:
+            advection_adj = 0.3  # Warm advection
+            factors.append(f"Wind {dir_name}: Warm advection (+0.3°F/hr)")
+        elif dir_name in ["NW", "NNW", "N", "NNE"]:
+            advection_adj = -0.5  # Cold advection
+            factors.append(f"Wind {dir_name}: Cold advection (-0.5°F/hr)")
+        else:
+            factors.append(f"Wind {dir_name}: Neutral")
+    
+    # Adjust for dew point (moisture slows heating)
+    if dewpoint:
+        dewpoint_spread = last_temp - dewpoint
+        if dewpoint_spread < 10:
+            moisture_factor = 0.7  # High moisture
+            factors.append(f"Dewpoint spread {dewpoint_spread:.0f}°F: High moisture (×0.7)")
+        elif dewpoint_spread > 25:
+            moisture_factor = 1.2  # Very dry, heats fast
+            factors.append(f"Dewpoint spread {dewpoint_spread:.0f}°F: Dry air (×1.2)")
+        else:
+            moisture_factor = 1.0
+            factors.append(f"Dewpoint spread {dewpoint_spread:.0f}°F: Normal")
+    else:
+        moisture_factor = 1.0
+    
+    # Calculate predicted change
+    adjusted_rate = (base_rate * cloud_factor + advection_adj) * moisture_factor
+    hours_since_obs = minutes_since_obs / 60
+    temp_change = adjusted_rate * hours_since_obs
+    
+    predicted_temp = last_temp + temp_change
+    
+    factors.append(f"---")
+    factors.append(f"Adjusted rate: {adjusted_rate:+.2f}°F/hr")
+    factors.append(f"Change since reading: {temp_change:+.1f}°F")
+    
+    return predicted_temp, minutes_since_obs, factors
 
 def get_wind_direction_name(degrees):
     """Convert wind degrees to direction name"""
@@ -336,8 +499,8 @@ city_config = CITIES[selected_city]
 with st.spinner("Fetching Kalshi brackets..."):
     brackets, bracket_error = fetch_kalshi_temp_brackets(city_config['series_ticker'])
 
-with st.spinner("Fetching weather..."):
-    weather = fetch_current_weather(city_config['lat'], city_config['lon'])
+with st.spinner("Fetching weather from NWS..."):
+    weather = fetch_current_weather(city_config['lat'], city_config['lon'], city_config.get('nws_station', 'KNYC'))
 
 # ========== NO EDGE FINDER ==========
 st.subheader("🎯 NO EDGE FINDER")
@@ -504,13 +667,40 @@ st.divider()
 st.subheader("🌤️ Current Conditions")
 
 if weather:
+    # Show source prominently
+    source = weather.get('source', 'Unknown')
+    if "NWS" in source:
+        st.success(f"📡 Data Source: **{source}** — Same source Kalshi uses for settlement!")
+    else:
+        st.warning(f"📡 Data Source: **{source}** — NWS unavailable, using backup")
+    
+    if weather.get('description'):
+        st.caption(f"Conditions: {weather['description']}")
+    
+    # Calculate predicted current temp
+    predicted_temp, mins_ago, prediction_factors = predict_current_temp(weather, city_config['tz'])
+    
+    # Show both NWS reading and predicted current
+    tc1, tc2, tc3 = st.columns(3)
+    tc1.metric("Last NWS Reading", f"{weather['temp']:.1f}°F" if weather['temp'] else "—", 
+               f"{mins_ago:.0f} min ago" if mins_ago else None)
+    tc2.metric("🎯 Predicted NOW", f"{predicted_temp:.1f}°F" if predicted_temp else "—",
+               f"{predicted_temp - weather['temp']:+.1f}°F" if predicted_temp and weather['temp'] else None)
+    tc3.metric("Kalshi Rounds To", f"{round(predicted_temp)}°F" if predicted_temp else "—")
+    
     wc1, wc2, wc3, wc4 = st.columns(4)
-    wc1.metric("Temperature", f"{weather['temp']:.1f}°F" if weather['temp'] else "—")
+    wc1.metric("Dewpoint", f"{weather['dewpoint']:.1f}°F" if weather.get('dewpoint') else "—")
     wc2.metric("Wind Speed", f"{weather['wind_speed']:.0f} mph" if weather['wind_speed'] else "—")
     wc3.metric("Wind Direction", get_wind_direction_name(weather['wind_dir']) if weather['wind_dir'] else "—")
     wc4.metric("Cloud Cover", f"{weather['cloud_cover']}%" if weather['cloud_cover'] is not None else "—")
+    
+    # Show prediction breakdown
+    with st.expander("🔬 Prediction Model Breakdown"):
+        for factor in prediction_factors:
+            st.markdown(f"• {factor}")
 else:
     st.warning("Could not fetch current weather")
+    predicted_temp = None
 
 st.divider()
 
@@ -677,7 +867,8 @@ with st.expander("➕ Add Position", expanded=False):
 
 if st.session_state.temp_positions:
     for idx, pos in enumerate(st.session_state.temp_positions):
-        pos_weather = fetch_current_weather(CITIES[pos['city']]['lat'], CITIES[pos['city']]['lon'])
+        pos_city_config = CITIES[pos['city']]
+        pos_weather = fetch_current_weather(pos_city_config['lat'], pos_city_config['lon'], pos_city_config.get('nws_station', 'KNYC'))
         current_temp = pos_weather['temp'] if pos_weather and pos_weather['temp'] else None
         
         if current_temp:
