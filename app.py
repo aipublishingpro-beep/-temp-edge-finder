@@ -20,13 +20,14 @@ def get_wind_direction(degrees):
 
 def fetch_weather(city_key):
     city = CITIES[city_key]
-    url = f"https://api.open-meteo.com/v1/forecast?latitude={city['lat']}&longitude={city['lon']}&current=temperature_2m,cloud_cover,wind_speed_10m,wind_direction_10m&daily=temperature_2m_max,temperature_2m_min&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone={city['tz']}&forecast_days=1"
+    url = f"https://api.open-meteo.com/v1/forecast?latitude={city['lat']}&longitude={city['lon']}&current=temperature_2m,cloud_cover,wind_speed_10m,wind_direction_10m&hourly=temperature_2m&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone={city['tz']}&forecast_days=1"
     
     try:
         resp = requests.get(url, timeout=10)
         data = resp.json()
         current = data.get("current", {})
         daily = data.get("daily", {})
+        hourly = data.get("hourly", {})
         return {
             "temp": current.get("temperature_2m", 0),
             "cloud": current.get("cloud_cover", 0),
@@ -34,21 +35,21 @@ def fetch_weather(city_key):
             "wind_dir": current.get("wind_direction_10m", 0),
             "forecast_high": daily.get("temperature_2m_max", [0])[0],
             "forecast_low": daily.get("temperature_2m_min", [0])[0],
+            "hourly_temps": hourly.get("temperature_2m", []),
             "success": True
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-def calculate_projection(weather, morning_low, current_hour):
+def calculate_high_projection(weather, morning_low, current_hour):
     # Peak time based on cloud cover
     if weather["cloud"] >= 70:
-        peak_hour = 14  # 2 PM overcast
+        peak_hour = 14
     elif weather["cloud"] >= 40:
-        peak_hour = 15  # 3 PM partly cloudy
+        peak_hour = 15
     else:
-        peak_hour = 16  # 4 PM clear
+        peak_hour = 16
     
-    # If past peak, current temp is near the high
     if current_hour >= peak_hour:
         return {
             "projected": weather["temp"],
@@ -59,31 +60,26 @@ def calculate_projection(weather, morning_low, current_hour):
             "hours_remaining": 0
         }
     
-    # Calculate warming pace
-    warming_start = 7  # 7 AM
+    warming_start = 7
     hours_elapsed = max(current_hour - warming_start, 0.5)
     hours_remaining = peak_hour - current_hour
     
     temp_rise = weather["temp"] - morning_low
     pace = temp_rise / hours_elapsed
     
-    # Project forward
     projected = weather["temp"] + (pace * hours_remaining)
     
-    # Cloud cover dampening
     if weather["cloud"] >= 70:
         projected = min(projected, weather["temp"] + 3)
     elif weather["cloud"] >= 50:
         projected = min(projected, weather["temp"] + 5)
     
-    # Wind advection adjustment
     wind_dir = get_wind_direction(weather["wind_dir"])
     if wind_dir in ["SW", "S"] and weather["wind"] >= 8:
-        projected += 2  # Warm air
+        projected += 2
     elif wind_dir in ["NW", "N", "NE"] and weather["wind"] >= 8:
-        projected -= 2  # Cold air
+        projected -= 2
     
-    # Confidence
     if current_hour >= 12:
         confidence = "HIGH"
     elif current_hour >= 10.5:
@@ -98,6 +94,46 @@ def calculate_projection(weather, morning_low, current_hour):
         "peak_hour": peak_hour,
         "pace": round(pace, 2),
         "hours_remaining": round(hours_remaining, 1)
+    }
+
+def calculate_low_projection(weather, current_hour, hourly_temps):
+    # Low typically occurs at sunrise (~6-7 AM)
+    # If before 9 AM, we can still observe/project the low
+    # If after 9 AM, the low has already occurred
+    
+    if current_hour <= 9:
+        # Still in low window - current or recent temps matter
+        # Find minimum from hourly data (overnight hours 0-9)
+        if hourly_temps and len(hourly_temps) >= 9:
+            overnight_temps = hourly_temps[0:9]
+            observed_low = min(overnight_temps)
+        else:
+            observed_low = weather["temp"]
+        
+        # Could still drop if before sunrise
+        if current_hour < 7:
+            # Pre-sunrise, might drop more
+            projected = min(weather["temp"] - 1, observed_low)
+            confidence = "MEDIUM"
+            method = "PRE-SUNRISE"
+        else:
+            # Post-sunrise, low is likely set
+            projected = observed_low
+            confidence = "HIGH"
+            method = "OBSERVED"
+    else:
+        # After 9 AM - low is locked in
+        if hourly_temps and len(hourly_temps) >= 9:
+            projected = min(hourly_temps[0:9])
+        else:
+            projected = weather["forecast_low"]
+        confidence = "LOCKED"
+        method = "OVERNIGHT MIN"
+    
+    return {
+        "projected": round(projected, 1),
+        "method": method,
+        "confidence": confidence
     }
 
 # ========== MAIN APP ==========
@@ -129,99 +165,136 @@ c4.metric("Direction", get_wind_direction(weather['wind_dir']))
 
 st.divider()
 
-# Morning low input
-morning_low = st.number_input("Morning Low (°F)", 0.0, 100.0, weather["forecast_low"], 1.0)
+# ========== MARKET TYPE SELECTION ==========
+market_type = st.radio("Market Type", ["HIGH", "LOW"], horizontal=True)
 
-# Calculate projection
-projection = calculate_projection(weather, morning_low, current_hour)
+st.divider()
 
-# Display projection vs forecast
-st.subheader("PROJECTION VS MARKET")
-col1, col2 = st.columns(2)
-
-with col1:
-    st.markdown("### 📊 MARKET FORECAST")
-    st.markdown(f"## {weather['forecast_high']:.0f}°F")
-    st.caption("Open-Meteo forecast (what Kalshi prices)")
-
-with col2:
-    st.markdown("### 📍 OUR PROJECTION")
-    st.markdown(f"## {projection['projected']:.1f}°F")
-    st.caption(f"{projection['confidence']} confidence • {projection['method']}")
-
-# Gap detection
-gap = abs(projection["projected"] - weather["forecast_high"])
-if gap >= 2:
-    st.warning(f"⚡ **{gap:.1f}°F GAP DETECTED** — Edge opportunity!")
-    if projection["projected"] < weather["forecast_high"]:
+if market_type == "HIGH":
+    # ========== HIGH TEMPERATURE ==========
+    st.header("🔥 HIGH TEMPERATURE")
+    
+    morning_low = st.number_input("Morning Low (°F)", 0.0, 100.0, weather["forecast_low"], 1.0,
+                                   help="Lowest temp this morning - used to calculate warming pace")
+    
+    projection = calculate_high_projection(weather, morning_low, current_hour)
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("### 📊 MARKET FORECAST")
+        st.markdown(f"## {weather['forecast_high']:.0f}°F")
+        st.caption("Open-Meteo (what Kalshi prices)")
+    
+    with col2:
+        st.markdown("### 📍 OUR PROJECTION")
+        st.markdown(f"## {projection['projected']:.1f}°F")
+        st.caption(f"{projection['confidence']} confidence • {projection['method']}")
+    
+    gap = projection["projected"] - weather["forecast_high"]
+    
+    if abs(gap) >= 2:
+        st.warning(f"⚡ **{abs(gap):.1f}°F GAP** — Edge opportunity!")
         target = int(weather["forecast_high"])
-        st.info(f"Projection BELOW forecast → Look for **NO** on {target-1}-{target}°F and {target}-{target+1}°F brackets")
+        if gap < 0:
+            st.info(f"Projection BELOW forecast → **NO** on {target-1}-{target}°F, {target}-{target+1}°F brackets")
+        else:
+            st.info(f"Projection ABOVE forecast → **NO** on lower brackets, **YES** on {target}-{target+1}°F+")
+    
+    st.divider()
+    st.subheader("PROJECTION DETAILS")
+    d1, d2, d3, d4 = st.columns(4)
+    d1.metric("Pace", f"{projection['pace']}°F/hr")
+    d2.metric("Hours to Peak", f"{projection['hours_remaining']}h")
+    d3.metric("Est. Peak", f"{projection['peak_hour']}:00")
+    d4.metric("Morning Low", f"{morning_low:.0f}°F")
+
+else:
+    # ========== LOW TEMPERATURE ==========
+    st.header("❄️ LOW TEMPERATURE")
+    
+    projection = calculate_low_projection(weather, current_hour, weather.get("hourly_temps", []))
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("### 📊 MARKET FORECAST")
+        st.markdown(f"## {weather['forecast_low']:.0f}°F")
+        st.caption("Open-Meteo (what Kalshi prices)")
+    
+    with col2:
+        st.markdown("### 📍 OUR PROJECTION")
+        st.markdown(f"## {projection['projected']:.1f}°F")
+        st.caption(f"{projection['confidence']} confidence • {projection['method']}")
+    
+    gap = projection["projected"] - weather["forecast_low"]
+    
+    if abs(gap) >= 2:
+        st.warning(f"⚡ **{abs(gap):.1f}°F GAP** — Edge opportunity!")
+        target = int(weather["forecast_low"])
+        if gap < 0:
+            st.info(f"Projection BELOW forecast → **YES** on lower brackets, **NO** on {target}-{target+1}°F+")
+        else:
+            st.info(f"Projection ABOVE forecast → **NO** on {target-1}-{target}°F, {target}-{target+1}°F brackets")
+    
+    st.divider()
+    
+    if current_hour <= 9:
+        st.info("🌅 **LOW WINDOW ACTIVE** — Low may still be forming")
     else:
-        target = int(weather["forecast_high"])
-        st.info(f"Projection ABOVE forecast → Look for **NO** on {target}-{target+1}°F and {target+1}-{target+2}°F brackets")
+        st.success("🔒 **LOW LOCKED** — Overnight minimum is set")
 
+# ========== BRACKET SCANNER ==========
 st.divider()
-
-# Projection details
-st.subheader("PROJECTION DETAILS")
-d1, d2, d3, d4 = st.columns(4)
-d1.metric("Pace", f"{projection['pace']}°F/hr")
-d2.metric("Hours to Peak", f"{projection['hours_remaining']}h")
-d3.metric("Est. Peak", f"{projection['peak_hour']}:00")
-d4.metric("Morning Low", f"{morning_low:.0f}°F")
-
-st.divider()
-
-# Bracket scanner
 st.subheader("BRACKET SCANNER")
 
-proj_int = int(round(projection["projected"]))
-fcst_int = int(round(weather["forecast_high"]))
+if market_type == "HIGH":
+    proj_int = int(round(projection["projected"]))
+    fcst_int = int(round(weather["forecast_high"]))
+else:
+    proj_int = int(round(projection["projected"]))
+    fcst_int = int(round(weather["forecast_low"]))
+
 center = (proj_int + fcst_int) // 2
 
-brackets = []
-for i in range(-5, 6):
-    low = center + i
+cols = st.columns(11)
+for i, offset in enumerate(range(-5, 6)):
+    low = center + offset
     high = low + 1
-    brackets.append((low, high))
-
-cols = st.columns(len(brackets))
-for i, (low, high) in enumerate(brackets):
+    
     is_proj = proj_int == low or proj_int == high
     is_fcst = fcst_int == low or fcst_int == high
     
-    label = f"**{low}-{high}°F**"
-    
-    if is_proj and is_fcst:
-        cols[i].markdown(f"🎯 {label}")
-        cols[i].caption("PROJ + FCST")
-    elif is_proj:
-        cols[i].markdown(f"📍 {label}")
-        cols[i].caption("OUR PROJ")
-    elif is_fcst:
-        cols[i].markdown(f"📊 {label}")
-        cols[i].caption("MARKET")
-    elif gap >= 2 and ((projection["projected"] < weather["forecast_high"] and low >= fcst_int - 1 and low <= fcst_int) or
-                       (projection["projected"] > weather["forecast_high"] and low <= fcst_int + 1 and low >= fcst_int)):
-        cols[i].markdown(f"⚡ {label}")
-        cols[i].caption("NO EDGE")
-    else:
-        cols[i].markdown(label)
+    with cols[i]:
+        if is_proj and is_fcst:
+            st.markdown(f"🎯 **{low}-{high}**")
+            st.caption("BOTH")
+        elif is_proj:
+            st.markdown(f"📍 **{low}-{high}**")
+            st.caption("PROJ")
+        elif is_fcst:
+            st.markdown(f"📊 **{low}-{high}**")
+            st.caption("FCST")
+        else:
+            st.markdown(f"{low}-{high}")
+
+st.caption("📍 = Our projection | 📊 = Market forecast | 🎯 = Both agree")
 
 st.divider()
 
 with st.expander("📖 HOW IT WORKS"):
     st.markdown("""
-    **Edge Finding Logic:**
+    **HIGH Temperature:**
+    - Market Forecast = Open-Meteo predicted high
+    - Our Projection = Current temp + (warming pace × hours to peak)
+    - Adjusted for cloud cover (caps heating) and wind direction (advection)
+    - Best window: 10:30 AM - 2:00 PM
     
-    1. **Market Forecast** = Open-Meteo's predicted high (what Kalshi likely prices)
-    2. **Our Projection** = Built from current temp + warming pace + conditions
-    3. **Gap** = When they differ by 2°F+, edge exists
+    **LOW Temperature:**
+    - Low occurs around sunrise (6-7 AM)
+    - Before 9 AM: Low may still be forming
+    - After 9 AM: Low is locked from overnight minimum
+    - Check hourly data to find actual overnight low
     
-    **If projection < forecast:** Market is overpricing high brackets → NO edge
-    **If projection > forecast:** Market is underpricing high brackets → YES edge on higher brackets
-    
-    **Best Window:** 10:30 AM - 2:00 PM for reliable signals
+    **Edge = When projection differs from forecast by 2°F+**
     """)
 
-st.caption("v2.0 | Temp Edge Finder")
+st.caption("v2.1 | High + Low Forecasting")
