@@ -213,9 +213,18 @@ with input_col2:
     projected_high = st.number_input("Projected High (°F)", 0.0, 120.0, weather['temp'] + 3.0, 0.5,
                                      help="Your projected max temp")
 with input_col3:
+    # Auto-select peak time based on cloud cover
+    if weather['cloud_cover'] >= 70:
+        default_peak = 1  # 2:00 PM for overcast
+    elif weather['cloud_cover'] >= 40:
+        default_peak = 2  # 3:00 PM for partly cloudy
+    else:
+        default_peak = 3  # 4:00 PM for clear
+    
     peak_hour = st.selectbox("Expected Peak Time", 
                              ["1:00 PM", "2:00 PM", "3:00 PM", "4:00 PM", "5:00 PM"],
-                             index=2)
+                             index=default_peak,
+                             help="Auto-selected based on cloud cover. Clear=4PM, Cloudy=2PM")
 
 # Calculate pace (warming rate per hour)
 current_hour = now.hour + now.minute / 60
