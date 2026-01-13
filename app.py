@@ -339,6 +339,108 @@ with st.spinner("Fetching Kalshi brackets..."):
 with st.spinner("Fetching weather..."):
     weather = fetch_current_weather(city_config['lat'], city_config['lon'])
 
+# ========== NO EDGE FINDER ==========
+st.subheader("🎯 NO EDGE FINDER")
+
+if brackets and weather and weather['temp']:
+    current_temp = weather['temp']
+    
+    # Estimate final high based on current temp, time of day, and conditions
+    local_tz = pytz.timezone(city_config['tz'])
+    local_now = datetime.now(local_tz)
+    hour = local_now.hour + local_now.minute / 60
+    
+    # Simple projection: current temp + expected remaining rise
+    if hour < 10:
+        remaining_rise = 8  # Morning, lots of heating left
+    elif hour < 12:
+        remaining_rise = 5  # Late morning
+    elif hour < 14:
+        remaining_rise = 3  # Early afternoon
+    elif hour < 16:
+        remaining_rise = 1  # Late afternoon
+    else:
+        remaining_rise = 0  # Evening, high likely set
+    
+    # Adjust for clouds (cap heating)
+    if weather['cloud_cover'] and weather['cloud_cover'] >= 70:
+        remaining_rise *= 0.5
+    
+    projected_high = current_temp + remaining_rise
+    projected_rounded = round(projected_high)
+    
+    st.markdown(f"### 🌡️ Current: **{current_temp:.1f}°F** → Projected High: **{projected_high:.1f}°F** (rounds to {projected_rounded}°F)")
+    
+    if hour >= 16:
+        st.info("⏰ After 4 PM — High likely already set. Limited edge remaining.")
+    
+    # Find NO edges
+    no_edges = []
+    for b in brackets:
+        if b['midpoint'] and b['yes_price']:
+            yes_price = b['yes_price']
+            no_price = 100 - yes_price
+            
+            # Calculate distance from projected high
+            distance = abs(b['midpoint'] - projected_high)
+            
+            # Determine if this bracket is likely to lose (good NO target)
+            # If projected high is far from this bracket, NO should win
+            if distance >= 4:
+                confidence = "HIGH"
+                edge_score = 3
+            elif distance >= 2:
+                confidence = "MEDIUM"
+                edge_score = 2
+            elif distance >= 1:
+                confidence = "LOW"
+                edge_score = 1
+            else:
+                confidence = "SKIP"
+                edge_score = 0
+            
+            # Only show if NO price is reasonable (not already 99¢)
+            if no_price <= 95 and edge_score > 0:
+                no_edges.append({
+                    'range': b['range'],
+                    'midpoint': b['midpoint'],
+                    'yes_price': yes_price,
+                    'no_price': no_price,
+                    'distance': distance,
+                    'confidence': confidence,
+                    'edge_score': edge_score
+                })
+    
+    # Sort by edge score (highest first), then by distance
+    no_edges.sort(key=lambda x: (-x['edge_score'], -x['distance']))
+    
+    if no_edges:
+        st.markdown("### 💰 Best NO Opportunities")
+        
+        for edge in no_edges:
+            if edge['confidence'] == "HIGH":
+                color = "#00ff00"
+                emoji = "🟢"
+            elif edge['confidence'] == "MEDIUM":
+                color = "#ffff00"
+                emoji = "🟡"
+            else:
+                color = "#ff8800"
+                emoji = "🟠"
+            
+            col1, col2, col3, col4 = st.columns([2, 1, 1, 2])
+            col1.markdown(f"**{edge['range']}**")
+            col2.markdown(f"NO @ **{edge['no_price']:.0f}¢**")
+            col3.markdown(f"{edge['distance']:.1f}°F away")
+            col4.markdown(f"<span style='color:{color}'>{emoji} **{edge['confidence']}** confidence</span>", unsafe_allow_html=True)
+    else:
+        st.info("No clear NO edges right now. Either market is settled (99¢) or projected high is uncertain.")
+    
+    st.divider()
+else:
+    st.warning("Need bracket data and weather to find NO edges")
+    st.divider()
+
 # ========== MARKET OVERVIEW ==========
 st.subheader(f"📊 {city_config['name']} High Temp Market")
 
