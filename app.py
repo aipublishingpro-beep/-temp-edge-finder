@@ -400,15 +400,57 @@ st.divider()
 
 # ========== EDGE CALCULATOR ==========
 st.subheader("🎯 EDGE CALCULATOR")
-st.caption("Enter your projection and target bracket to calculate edge")
 
-ec1, ec2, ec3 = st.columns(3)
-
-default_current = weather['temp'] if weather and weather['temp'] else 40.0
-
-your_projection = ec1.number_input("Your High Temp Projection (°F)", 20.0, 100.0, default_current + 5, 0.5)
-target_bracket = ec2.number_input("Target Bracket Upper Bound (°F)", 20.0, 100.0, default_current + 8, 1.0)
-bet_side = ec3.selectbox("Bet Side", ["NO (Under)", "YES (Over)"])
+if brackets and len(brackets) > 0:
+    st.caption("Select a bracket from today's Kalshi market")
+    
+    ec1, ec2 = st.columns([2, 1])
+    
+    # Dropdown with real brackets
+    bracket_options = [b['range'] for b in brackets]
+    selected_bracket_name = ec1.selectbox("Select Bracket", bracket_options)
+    
+    # Find the selected bracket data
+    selected_bracket = next((b for b in brackets if b['range'] == selected_bracket_name), None)
+    
+    bet_side = ec2.selectbox("Bet Side", ["NO (Under)", "YES (Over)"])
+    
+    # Show bracket details
+    if selected_bracket:
+        bc1, bc2, bc3, bc4 = st.columns(4)
+        bc1.metric("Bracket", selected_bracket['range'])
+        bc2.metric("Yes Price", f"{selected_bracket['yes_price']:.0f}¢" if selected_bracket['yes_price'] else "—")
+        bc3.metric("No Price", f"{100 - selected_bracket['yes_price']:.0f}¢" if selected_bracket['yes_price'] else "—")
+        bc4.metric("Midpoint", f"{selected_bracket['midpoint']}°F" if selected_bracket['midpoint'] else "—")
+        
+        # User projection input
+        default_current = weather['temp'] if weather and weather['temp'] else 40.0
+        your_projection = st.number_input("Your High Temp Projection (°F)", 20.0, 100.0, default_current + 3, 0.5)
+        
+        # Calculate cushion based on bracket and bet side
+        if selected_bracket['midpoint']:
+            if "NO" in bet_side:
+                # NO bet wins if actual high is BELOW the bracket
+                # Cushion = how much room before high reaches this bracket
+                cushion = selected_bracket['midpoint'] - your_projection
+            else:
+                # YES bet wins if actual high is IN or ABOVE the bracket
+                cushion = your_projection - selected_bracket['midpoint']
+            
+            target_bracket = selected_bracket['midpoint']
+        else:
+            cushion = 0
+            target_bracket = 45
+else:
+    st.warning("No brackets loaded. Check Kalshi data above or use manual entry below.")
+    default_current = weather['temp'] if weather and weather['temp'] else 40.0
+    your_projection = st.number_input("Your High Temp Projection (°F)", 20.0, 100.0, default_current + 5, 0.5)
+    target_bracket = st.number_input("Target Bracket (°F)", 20.0, 100.0, default_current + 8, 1.0)
+    bet_side = st.selectbox("Bet Side", ["NO (Under)", "YES (Over)"])
+    if "NO" in bet_side:
+        cushion = target_bracket - your_projection
+    else:
+        cushion = your_projection - target_bracket
 
 local_tz = pytz.timezone(city_config['tz'])
 local_now = datetime.now(local_tz)
