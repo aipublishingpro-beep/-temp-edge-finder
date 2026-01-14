@@ -107,21 +107,11 @@ def calc_market_forecast(brackets):
             tp += b['yes']
     return round(ws / tp, 1) if tp > 0 else None
 
-def get_buy_bracket(brackets, forecast):
-    """Find the bracket that contains the forecast"""
-    if not brackets or not forecast:
+def get_buy_bracket(brackets):
+    """Find the bracket with the highest YES price (market's pick)"""
+    if not brackets:
         return None
-    for b in brackets:
-        if b['mid']:
-            if "above" in b['range'].lower():
-                if forecast >= b['mid'] - 1:
-                    return b
-            elif "below" in b['range'].lower():
-                if forecast <= b['mid'] + 1:
-                    return b
-            elif b['mid'] - 1 <= forecast <= b['mid'] + 1:
-                return b
-    return None
+    return max(brackets, key=lambda b: b['yes'])
 
 # ========== FETCH NWS CURRENT TEMP ==========
 def fetch_nws_temp(station):
@@ -167,7 +157,7 @@ st.subheader("🎯 MARKET FORECAST")
 
 if brackets:
     forecast = calc_market_forecast(brackets)
-    buy_bracket = get_buy_bracket(brackets, forecast)
+    buy_bracket = get_buy_bracket(brackets)
     
     if forecast:
         st.markdown(f"# {forecast}°F")
@@ -198,7 +188,7 @@ st.subheader("📊 All Brackets")
 
 if brackets:
     forecast = calc_market_forecast(brackets)
-    buy_bracket = get_buy_bracket(brackets, forecast)
+    buy_bracket = get_buy_bracket(brackets)
     
     for b in brackets:
         is_buy = buy_bracket and b['range'] == buy_bracket['range']
