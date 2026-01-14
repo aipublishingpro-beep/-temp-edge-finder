@@ -40,7 +40,7 @@ with st.sidebar:
     """)
     
     st.divider()
-    st.caption("v3.0 | Quick Trade")
+    st.caption("v3.1 | Quick Trade")
 
 # ========== CITIES ==========
 CITIES = {
@@ -142,7 +142,7 @@ now_et = datetime.now(pytz.timezone('US/Eastern'))
 hour = now_et.hour
 
 st.title("🌡️ TEMP QUICK TRADE")
-st.caption(f"v3.0 | {now_et.strftime('%I:%M %p ET')}")
+st.caption(f"v3.1 | {now_et.strftime('%I:%M %p ET')}")
 
 # ========== TIMING INDICATOR ==========
 if 6 <= hour < 8:
@@ -203,13 +203,17 @@ if brackets:
     for b in brackets:
         is_buy = buy_bracket and b['range'] == buy_bracket['range']
         
-        col1, col2, col3 = st.columns([2, 1, 1])
-        
         if is_buy:
-            col1.markdown(f"**{b['range']}** 🎯")
-            col2.markdown(f"**YES {b['yes']:.0f}¢**")
-            col3.markdown(f"NO {100-b['yes']:.0f}¢")
+            st.markdown(
+                f"""<div style="background-color: #FF8C00; padding: 10px; border-radius: 8px; margin: 5px 0;">
+                <span style="color: white; font-weight: bold;">{b['range']} 🎯</span>
+                <span style="color: white; font-weight: bold; margin-left: 40px;">YES {b['yes']:.0f}¢</span>
+                <span style="color: white; margin-left: 40px;">NO {100-b['yes']:.0f}¢</span>
+                </div>""",
+                unsafe_allow_html=True
+            )
         else:
+            col1, col2, col3 = st.columns([2, 1, 1])
             col1.write(b['range'])
             col2.write(f"YES {b['yes']:.0f}¢")
             col3.write(f"NO {100-b['yes']:.0f}¢")
