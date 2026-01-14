@@ -98,14 +98,11 @@ def fetch_kalshi_brackets(series_ticker):
         return None
 
 def calc_market_forecast(brackets):
+    """Get forecast from the bracket with highest YES price"""
     if not brackets:
         return None
-    ws, tp = 0, 0
-    for b in brackets:
-        if b['mid'] and 5 <= b['yes'] <= 95:
-            ws += b['mid'] * b['yes']
-            tp += b['yes']
-    return round(ws / tp, 1) if tp > 0 else None
+    buy_bracket = max(brackets, key=lambda b: b['yes'])
+    return buy_bracket['mid']
 
 def get_buy_bracket(brackets):
     """Find the bracket with the highest YES price (market's pick)"""
