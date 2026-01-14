@@ -1,6 +1,6 @@
 import streamlit as st
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 
 st.set_page_config(page_title="Temp Edge Finder", page_icon="🌡️", layout="wide")
@@ -32,15 +32,15 @@ with st.sidebar:
     - Max zigzag ratio: 45%
     """)
     st.divider()
-    st.caption("v2.5 | Volatility Gate")
+    st.caption("v2.6 | Backup Weather API")
 
-# ========== CITIES ==========
+# ========== CITIES (with lat/lon for backup API) ==========
 CITIES = {
-    "NYC": {"name": "New York (Central Park)", "tz": "America/New_York", "series_ticker": "KXHIGHNY", "nws_station": "KNYC"},
-    "Chicago": {"name": "Chicago (O'Hare)", "tz": "America/Chicago", "series_ticker": "KXHIGHCHI", "nws_station": "KORD"},
-    "LA": {"name": "Los Angeles (LAX)", "tz": "America/Los_Angeles", "series_ticker": "KXHIGHLA", "nws_station": "KLAX"},
-    "Miami": {"name": "Miami", "tz": "America/New_York", "series_ticker": "KXHIGHMIA", "nws_station": "KMIA"},
-    "Denver": {"name": "Denver", "tz": "America/Denver", "series_ticker": "KXHIGHDEN", "nws_station": "KDEN"},
+    "NYC": {"name": "New York (Central Park)", "tz": "America/New_York", "series_ticker": "KXHIGHNY", "nws_station": "KNYC", "lat": 40.7829, "lon": -73.9654},
+    "Chicago": {"name": "Chicago (O'Hare)", "tz": "America/Chicago", "series_ticker": "KXHIGHCHI", "nws_station": "KORD", "lat": 41.9742, "lon": -87.9073},
+    "LA": {"name": "Los Angeles (LAX)", "tz": "America/Los_Angeles", "series_ticker": "KXHIGHLA", "nws_station": "KLAX", "lat": 33.9425, "lon": -118.4081},
+    "Miami": {"name": "Miami", "tz": "America/New_York", "series_ticker": "KXHIGHMIA", "nws_station": "KMIA", "lat": 25.7959, "lon": -80.2870},
+    "Denver": {"name": "Denver", "tz": "America/Denver", "series_ticker": "KXHIGHDEN", "nws_station": "KDEN", "lat": 39.8561, "lon": -104.6737},
 }
 
 # ========== VOLATILITY GATE FUNCTIONS ==========
@@ -56,7 +56,6 @@ def compute_reversals(deltas):
     for i in range(1, len(deltas)):
         d1 = deltas[i-1]
         d2 = deltas[i]
-        # Ignore sensor jitter below deadband
         if abs(d1) < DELTA_DEADBAND or abs(d2) < DELTA_DEADBAND:
             continue
         if (d1 > 0) != (d2 > 0):
@@ -64,12 +63,7 @@ def compute_reversals(deltas):
     return reversals
 
 def volatility_gate(am_readings):
-    """
-    Returns: (status, reason, diagnostics)
-    status: True = ALLOW, False = BLOCK
-    """
     diagnostics = {}
-    
     if len(am_readings) < MIN_POINTS:
         return False, "Insufficient morning data", diagnostics
     
@@ -91,13 +85,94 @@ def volatility_gate(am_readings):
     
     if max_reversal > MAX_REVERSAL:
         return False, f"Large reversal: {max_reversal:.1f}°F", diagnostics
-    
     if zigzag_ratio > MAX_ZIGZAG_RATIO:
         return False, f"Erratic movement: {zigzag_ratio:.0%} zigzag", diagnostics
     
     return True, "Smooth trend ✓", diagnostics
 
-# ========== API FUNCTIONS ==========
+# ========== PRIMARY API: NWS ==========
+def fetch_weather(station):
+    """Primary: NWS current conditions"""
+    url = f"https://api.weather.gov/stations/{station}/observations/latest"
+    try:
+        resp = requests.get(url, headers={"User-Agent": "TempEdge/2.6"}, timeout=10)
+        if resp.status_code == 200:
+            p = resp.json().get("properties", {})
+            tc = p.get("temperature", {}).get("value")
+            dc = p.get("dewpoint", {}).get("value")
+            ws = p.get("windSpeed", {}).get("value")
+            wd = p.get("windDirection", {}).get("value")
+            desc = p.get("textDescription", "")
+            dirs = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"]
+            wn = dirs[round(wd/22.5)%16] if wd else ""
+            if tc is not None:
+                return {
+                    "temp": tc * 9/5 + 32,
+                    "dew": dc * 9/5 + 32 if dc else None,
+                    "wind": f"{ws*2.237:.0f} mph {wn}" if ws else None,
+                    "desc": desc,
+                    "source": "NWS"
+                }
+    except:
+        pass
+    return None
+
+def fetch_nws_history(station):
+    """Primary: NWS historical readings"""
+    url = f"https://api.weather.gov/stations/{station}/observations"
+    try:
+        resp = requests.get(url, headers={"User-Agent": "TempEdge/2.6"}, timeout=15)
+        if resp.status_code != 200:
+            return None
+        readings = []
+        for f in resp.json().get("features", [])[:24]:
+            p = f.get("properties", {})
+            tc = p.get("temperature", {}).get("value")
+            if tc is not None:
+                readings.append({"time": p.get("timestamp", ""), "temp": tc * 9/5 + 32})
+        return readings if readings else None
+    except:
+        return None
+
+# ========== BACKUP API: OPEN-METEO (No API key needed) ==========
+def fetch_backup_weather(lat, lon):
+    """Backup: Open-Meteo current conditions"""
+    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true&temperature_unit=fahrenheit&windspeed_unit=mph"
+    try:
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json().get("current_weather", {})
+            if data.get("temperature") is not None:
+                return {
+                    "temp": data.get("temperature"),
+                    "dew": None,
+                    "wind": f"{data.get('windspeed', 0):.0f} mph",
+                    "desc": "—",
+                    "source": "Open-Meteo (backup)"
+                }
+    except:
+        pass
+    return None
+
+def fetch_backup_history(lat, lon, tz):
+    """Backup: Open-Meteo hourly history"""
+    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m&temperature_unit=fahrenheit&timezone={tz}&past_days=1&forecast_days=1"
+    try:
+        resp = requests.get(url, timeout=15)
+        if resp.status_code == 200:
+            data = resp.json().get("hourly", {})
+            times = data.get("time", [])
+            temps = data.get("temperature_2m", [])
+            readings = []
+            for t, temp in zip(times, temps):
+                if temp is not None:
+                    readings.append({"time": t + ":00+00:00", "temp": temp})
+            return readings if readings else None
+    except:
+        pass
+    return None
+
+# ========== KALSHI API ==========
 def fetch_kalshi_brackets(series_ticker):
     url = f"https://api.elections.kalshi.com/trade-api/v2/markets?series_ticker={series_ticker}&status=open"
     try:
@@ -153,48 +228,10 @@ def calc_market_forecast(brackets):
             tp += b['yes']
     return round(ws / tp, 1) if tp > 0 else None
 
-def fetch_nws_history(station):
-    url = f"https://api.weather.gov/stations/{station}/observations"
-    try:
-        resp = requests.get(url, headers={"User-Agent": "Temp/2.5"}, timeout=15)
-        if resp.status_code != 200:
-            return None
-        readings = []
-        for f in resp.json().get("features", [])[:24]:
-            p = f.get("properties", {})
-            tc = p.get("temperature", {}).get("value")
-            if tc is not None:
-                readings.append({"time": p.get("timestamp", ""), "temp": tc * 9/5 + 32})
-        return readings
-    except:
-        return None
-
-def fetch_weather(station):
-    url = f"https://api.weather.gov/stations/{station}/observations/latest"
-    try:
-        resp = requests.get(url, headers={"User-Agent": "Temp/2.5"}, timeout=10)
-        if resp.status_code == 200:
-            p = resp.json().get("properties", {})
-            tc = p.get("temperature", {}).get("value")
-            dc = p.get("dewpoint", {}).get("value")
-            ws = p.get("windSpeed", {}).get("value")
-            wd = p.get("windDirection", {}).get("value")
-            desc = p.get("textDescription", "")
-            dirs = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"]
-            wn = dirs[round(wd/22.5)%16] if wd else ""
-            return {
-                "temp": tc * 9/5 + 32 if tc else None,
-                "dew": dc * 9/5 + 32 if dc else None,
-                "wind": f"{ws*2.237:.0f} mph {wn}" if ws else None,
-                "desc": desc
-            }
-    except:
-        pass
-    return None
-
+# ========== PREDICTION ENGINE ==========
 def predict_high(readings, tz):
     if not readings or len(readings) < 2:
-        return None, None, [], None
+        return None, None, ["Need more data"], None
     
     local_tz = pytz.timezone(tz)
     now = datetime.now(local_tz)
@@ -203,7 +240,14 @@ def predict_high(readings, tz):
     todays = []
     for r in readings:
         try:
-            ts = datetime.fromisoformat(r['time'].replace('Z','+00:00')).astimezone(local_tz)
+            ts_str = r['time']
+            if 'Z' in ts_str:
+                ts = datetime.fromisoformat(ts_str.replace('Z','+00:00')).astimezone(local_tz)
+            elif '+' in ts_str or '-' in ts_str[-6:]:
+                ts = datetime.fromisoformat(ts_str).astimezone(local_tz)
+            else:
+                ts = datetime.fromisoformat(ts_str).replace(tzinfo=local_tz)
+            
             if ts.date() == today:
                 todays.append({"hr": ts.hour + ts.minute/60, "temp": r['temp'], "t": ts.strftime("%I:%M %p")})
         except:
@@ -218,11 +262,11 @@ def predict_high(readings, tz):
     am = [r for r in todays if 6 <= r['hr'] <= 12]
     
     info = ["**Morning Readings:**"]
-    for r in reversed(am):
+    for r in reversed(am[-5:]):
         info.append(f"  {r['t']}: {r['temp']:.1f}°F")
     
     if len(am) < 2:
-        info.append("⏳ Need morning data")
+        info.append("⏳ Need morning data (6 AM - 12 PM)")
         return None, None, info, None
     
     # ========== VOLATILITY GATE ==========
@@ -255,24 +299,39 @@ def predict_high(readings, tz):
 # ========== MAIN ==========
 now = datetime.now(pytz.timezone('US/Eastern'))
 st.title("🌡️ TEMP EDGE FINDER")
-st.caption(f"{now.strftime('%I:%M %p ET')} | v2.5 | Volatility Gate")
+st.caption(f"{now.strftime('%I:%M %p ET')} | v2.6 | Backup Weather API")
 
 city = st.selectbox("City", list(CITIES.keys()), format_func=lambda x: CITIES[x]['name'])
 cfg = CITIES[city]
 
-brackets = fetch_kalshi_brackets(cfg['series_ticker'])
+# ========== FETCH DATA WITH FALLBACK ==========
+# Try NWS first, then backup
 weather = fetch_weather(cfg['nws_station'])
+if not weather or weather.get('temp') is None:
+    weather = fetch_backup_weather(cfg['lat'], cfg['lon'])
+    if weather:
+        st.warning("⚠️ Using backup weather source (Open-Meteo)")
+
 history = fetch_nws_history(cfg['nws_station'])
+if not history:
+    history = fetch_backup_history(cfg['lat'], cfg['lon'], cfg['tz'])
+    if history:
+        st.info("📡 Using backup history source (Open-Meteo)")
+
+brackets = fetch_kalshi_brackets(cfg['series_ticker'])
 
 st.divider()
 
 # ========== WEATHER ==========
 st.subheader("🌤️ Current")
 if weather:
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Temp", f"{weather['temp']:.1f}°F" if weather['temp'] else "—")
     c2.metric("Wind", weather['wind'] or "—")
     c3.metric("Conditions", weather['desc'] or "—")
+    c4.metric("Source", weather.get('source', 'Unknown'))
+else:
+    st.error("❌ No weather data available from any source")
 
 st.divider()
 
@@ -289,7 +348,6 @@ if history:
         else:
             st.error(f"⛔ **NO TRADE DAY** — {gate_result['reason']}")
         
-        # Gate diagnostics
         with st.expander("🔍 Volatility Diagnostics"):
             if 'total_move' in gate_result:
                 st.write(f"**Total morning move:** {gate_result['total_move']:.1f}°F")
@@ -311,8 +369,13 @@ if history:
                     if b['mid'] - 1 <= pred_mid <= b['mid'] + 1:
                         your_bracket = b
                         break
+            # If no exact match, find closest
+            if not your_bracket:
+                for b in brackets:
+                    if b['mid'] and pred_mid >= b['mid'] - 1:
+                        your_bracket = b
         
-        # Display prediction with ACTUAL bracket
+        # Display prediction
         st.markdown(f"### 🎯 {pred_low:.0f}-{pred_high:.0f}°F")
         
         if your_bracket:
@@ -324,9 +387,8 @@ if history:
             if mkt:
                 diff = pred_mid - mkt
                 
-                st.markdown(f"**Market Forecast:** {mkt:.1f}°F | **Diff:** {diff:+.1f}°F")
+                st.markdown(f"**Market Forecast:** {mkt:.1f}°F | **Your Model:** {pred_mid:.1f}°F | **Diff:** {diff:+.1f}°F")
                 
-                # Find market's bracket
                 mkt_bracket = None
                 for b in brackets:
                     if b['mid'] and b['mid'] - 1 <= mkt <= b['mid'] + 1:
@@ -338,26 +400,30 @@ if history:
                     
                     if diff < 0:
                         st.markdown("### You predict LOWER than market:")
-                        st.markdown(f"✅ **BUY YES:** {your_bracket['range']} @ {your_bracket['yes']:.0f}¢" if your_bracket else "")
+                        if your_bracket:
+                            st.markdown(f"✅ **BUY YES:** {your_bracket['range']} @ {your_bracket['yes']:.0f}¢")
                         if mkt_bracket:
                             st.markdown(f"❌ **BUY NO:** {mkt_bracket['range']} @ {100-mkt_bracket['yes']:.0f}¢")
                     else:
                         st.markdown("### You predict HIGHER than market:")
-                        st.markdown(f"✅ **BUY YES:** {your_bracket['range']} @ {your_bracket['yes']:.0f}¢" if your_bracket else "")
+                        if your_bracket:
+                            st.markdown(f"✅ **BUY YES:** {your_bracket['range']} @ {your_bracket['yes']:.0f}¢")
                         if mkt_bracket:
                             st.markdown(f"❌ **BUY NO:** {mkt_bracket['range']} @ {100-mkt_bracket['yes']:.0f}¢")
                 else:
-                    st.info("Market already priced correctly — discipline hold")
+                    st.info("📊 Market already priced correctly — NO TRADE")
         
-        with st.expander("📊 Calculation"):
+        with st.expander("📊 Calculation Details"):
             for i in info:
                 st.markdown(i)
     else:
         if not gate_result or gate_result.get('pass', True):
-            st.warning("⏳ Need morning data (after 9 AM)")
-        with st.expander("Data"):
+            st.warning("⏳ Need morning data (check back after 9-10 AM)")
+        with st.expander("📊 Data Details"):
             for i in info:
                 st.markdown(i)
+else:
+    st.error("❌ No historical data available — cannot generate prediction")
 
 st.divider()
 
@@ -373,11 +439,13 @@ if brackets:
         c1.write(b['range'])
         if b['yes'] >= 90:
             c2.markdown(f"**YES {b['yes']:.0f}¢** ✅")
+        elif b['yes'] >= 50:
+            c2.markdown(f"**YES {b['yes']:.0f}¢**")
         else:
             c2.write(f"YES {b['yes']:.0f}¢")
         c3.write(f"NO {100-b['yes']:.0f}¢")
 else:
-    st.warning("No brackets found")
+    st.warning("No Kalshi brackets found for today")
 
 st.divider()
-st.caption("⚠️ Not financial advice")
+st.caption("⚠️ Not financial advice. For entertainment purposes only.")
