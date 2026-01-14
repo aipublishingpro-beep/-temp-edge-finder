@@ -1,178 +1,57 @@
 import streamlit as st
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 
-st.set_page_config(page_title="Temp Edge Finder", page_icon="🌡️", layout="wide")
+st.set_page_config(page_title="Temp Quick Trade", page_icon="🌡️", layout="wide")
 
-# ========== VOLATILITY GATE CONSTANTS ==========
-MIN_POINTS = 3
-MAX_REVERSAL = 1.2  # °F
-MAX_ZIGZAG_RATIO = 0.45
-DELTA_DEADBAND = 0.4  # °F — ignore sensor jitter
-
-# ========== SIDEBAR ==========
+# ========== SIDEBAR LEGEND ==========
 with st.sidebar:
-    st.header("📖 LEGEND")
+    st.header("⏰ BEST TIME TO BUY")
     st.markdown("""
-    **Edge = 2°F+ difference**
+    🟡 **6-8 AM** — Risky, forecast forming
     
-    **Your pred LOWER than market:**
-    - BUY YES on YOUR bracket
-    - BUY NO on market's bracket
+    🟢 **8-10 AM** — BEST TIME!
     
-    **Your pred HIGHER than market:**
-    - BUY YES on YOUR bracket  
-    - BUY NO on lower brackets
+    🔵 **10-12 PM** — Good, prices rising
     
-    ---
-    **Volatility Gate:**
-    - Blocks erratic days
-    - Max reversal: 1.2°F
-    - Max zigzag ratio: 45%
+    🔴 **12 PM+** — Late, prices baked in
     """)
+    
     st.divider()
-    st.caption("v2.6 | Backup Weather API")
+    
+    st.header("📖 STRATEGY")
+    st.markdown("""
+    1. Check **Market Forecast**
+    2. **BUY YES** on that bracket
+    3. Optional: **BUY NO** on bracket above
+    4. Sell for profit or hold
+    """)
+    
+    st.divider()
+    
+    st.header("💡 HEDGE PLAY")
+    st.markdown("""
+    If forecast = 52°F:
+    - **YES 51-52** → wins if 51-52
+    - **NO 53+** → wins if ≤52
+    
+    Both win if temp = 51-52°F!
+    """)
+    
+    st.divider()
+    st.caption("v3.0 | Quick Trade")
 
-# ========== CITIES (with lat/lon for backup API) ==========
+# ========== CITIES ==========
 CITIES = {
-    "NYC": {"name": "New York (Central Park)", "tz": "America/New_York", "series_ticker": "KXHIGHNY", "nws_station": "KNYC", "lat": 40.7829, "lon": -73.9654},
-    "Chicago": {"name": "Chicago (O'Hare)", "tz": "America/Chicago", "series_ticker": "KXHIGHCHI", "nws_station": "KORD", "lat": 41.9742, "lon": -87.9073},
-    "LA": {"name": "Los Angeles (LAX)", "tz": "America/Los_Angeles", "series_ticker": "KXHIGHLA", "nws_station": "KLAX", "lat": 33.9425, "lon": -118.4081},
-    "Miami": {"name": "Miami", "tz": "America/New_York", "series_ticker": "KXHIGHMIA", "nws_station": "KMIA", "lat": 25.7959, "lon": -80.2870},
-    "Denver": {"name": "Denver", "tz": "America/Denver", "series_ticker": "KXHIGHDEN", "nws_station": "KDEN", "lat": 39.8561, "lon": -104.6737},
+    "NYC": {"name": "New York (Central Park)", "tz": "America/New_York", "series_ticker": "KXHIGHNY", "nws_station": "KNYC"},
+    "Chicago": {"name": "Chicago (O'Hare)", "tz": "America/Chicago", "series_ticker": "KXHIGHCHI", "nws_station": "KORD"},
+    "LA": {"name": "Los Angeles (LAX)", "tz": "America/Los_Angeles", "series_ticker": "KXHIGHLA", "nws_station": "KLAX"},
+    "Miami": {"name": "Miami", "tz": "America/New_York", "series_ticker": "KXHIGHMIA", "nws_station": "KMIA"},
+    "Denver": {"name": "Denver", "tz": "America/Denver", "series_ticker": "KXHIGHDEN", "nws_station": "KDEN"},
 }
 
-# ========== VOLATILITY GATE FUNCTIONS ==========
-def compute_deltas(am_readings):
-    deltas = []
-    for i in range(1, len(am_readings)):
-        delta = am_readings[i]['temp'] - am_readings[i-1]['temp']
-        deltas.append(delta)
-    return deltas
-
-def compute_reversals(deltas):
-    reversals = []
-    for i in range(1, len(deltas)):
-        d1 = deltas[i-1]
-        d2 = deltas[i]
-        if abs(d1) < DELTA_DEADBAND or abs(d2) < DELTA_DEADBAND:
-            continue
-        if (d1 > 0) != (d2 > 0):
-            reversals.append(abs(d2))
-    return reversals
-
-def volatility_gate(am_readings):
-    diagnostics = {}
-    if len(am_readings) < MIN_POINTS:
-        return False, "Insufficient morning data", diagnostics
-    
-    deltas = compute_deltas(am_readings)
-    total_move = abs(am_readings[-1]['temp'] - am_readings[0]['temp'])
-    diagnostics['total_move'] = total_move
-    
-    if total_move == 0:
-        return False, "Flat morning — no trend", diagnostics
-    
-    reversals = compute_reversals(deltas)
-    max_reversal = max(reversals) if reversals else 0
-    zigzag_magnitude = sum(reversals)
-    zigzag_ratio = zigzag_magnitude / total_move if total_move > 0 else 0
-    
-    diagnostics['max_reversal'] = max_reversal
-    diagnostics['zigzag_ratio'] = zigzag_ratio
-    diagnostics['reversal_count'] = len(reversals)
-    
-    if max_reversal > MAX_REVERSAL:
-        return False, f"Large reversal: {max_reversal:.1f}°F", diagnostics
-    if zigzag_ratio > MAX_ZIGZAG_RATIO:
-        return False, f"Erratic movement: {zigzag_ratio:.0%} zigzag", diagnostics
-    
-    return True, "Smooth trend ✓", diagnostics
-
-# ========== PRIMARY API: NWS ==========
-def fetch_weather(station):
-    """Primary: NWS current conditions"""
-    url = f"https://api.weather.gov/stations/{station}/observations/latest"
-    try:
-        resp = requests.get(url, headers={"User-Agent": "TempEdge/2.6"}, timeout=10)
-        if resp.status_code == 200:
-            p = resp.json().get("properties", {})
-            tc = p.get("temperature", {}).get("value")
-            dc = p.get("dewpoint", {}).get("value")
-            ws = p.get("windSpeed", {}).get("value")
-            wd = p.get("windDirection", {}).get("value")
-            desc = p.get("textDescription", "")
-            dirs = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"]
-            wn = dirs[round(wd/22.5)%16] if wd else ""
-            if tc is not None:
-                return {
-                    "temp": tc * 9/5 + 32,
-                    "dew": dc * 9/5 + 32 if dc else None,
-                    "wind": f"{ws*2.237:.0f} mph {wn}" if ws else None,
-                    "desc": desc,
-                    "source": "NWS"
-                }
-    except:
-        pass
-    return None
-
-def fetch_nws_history(station):
-    """Primary: NWS historical readings"""
-    url = f"https://api.weather.gov/stations/{station}/observations"
-    try:
-        resp = requests.get(url, headers={"User-Agent": "TempEdge/2.6"}, timeout=15)
-        if resp.status_code != 200:
-            return None
-        readings = []
-        for f in resp.json().get("features", [])[:24]:
-            p = f.get("properties", {})
-            tc = p.get("temperature", {}).get("value")
-            if tc is not None:
-                readings.append({"time": p.get("timestamp", ""), "temp": tc * 9/5 + 32})
-        return readings if readings else None
-    except:
-        return None
-
-# ========== BACKUP API: OPEN-METEO (No API key needed) ==========
-def fetch_backup_weather(lat, lon):
-    """Backup: Open-Meteo current conditions"""
-    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true&temperature_unit=fahrenheit&windspeed_unit=mph"
-    try:
-        resp = requests.get(url, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json().get("current_weather", {})
-            if data.get("temperature") is not None:
-                return {
-                    "temp": data.get("temperature"),
-                    "dew": None,
-                    "wind": f"{data.get('windspeed', 0):.0f} mph",
-                    "desc": "—",
-                    "source": "Open-Meteo (backup)"
-                }
-    except:
-        pass
-    return None
-
-def fetch_backup_history(lat, lon, tz):
-    """Backup: Open-Meteo hourly history"""
-    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&hourly=temperature_2m&temperature_unit=fahrenheit&timezone={tz}&past_days=1&forecast_days=1"
-    try:
-        resp = requests.get(url, timeout=15)
-        if resp.status_code == 200:
-            data = resp.json().get("hourly", {})
-            times = data.get("time", [])
-            temps = data.get("temperature_2m", [])
-            readings = []
-            for t, temp in zip(times, temps):
-                if temp is not None:
-                    readings.append({"time": t + ":00+00:00", "temp": temp})
-            return readings if readings else None
-    except:
-        pass
-    return None
-
-# ========== KALSHI API ==========
+# ========== FETCH KALSHI BRACKETS ==========
 def fetch_kalshi_brackets(series_ticker):
     url = f"https://api.elections.kalshi.com/trade-api/v2/markets?series_ticker={series_ticker}&status=open"
     try:
@@ -228,224 +107,129 @@ def calc_market_forecast(brackets):
             tp += b['yes']
     return round(ws / tp, 1) if tp > 0 else None
 
-# ========== PREDICTION ENGINE ==========
-def predict_high(readings, tz):
-    if not readings or len(readings) < 2:
-        return None, None, ["Need more data"], None
-    
-    local_tz = pytz.timezone(tz)
-    now = datetime.now(local_tz)
-    today = now.date()
-    
-    todays = []
-    for r in readings:
-        try:
-            ts_str = r['time']
-            if 'Z' in ts_str:
-                ts = datetime.fromisoformat(ts_str.replace('Z','+00:00')).astimezone(local_tz)
-            elif '+' in ts_str or '-' in ts_str[-6:]:
-                ts = datetime.fromisoformat(ts_str).astimezone(local_tz)
-            else:
-                ts = datetime.fromisoformat(ts_str).replace(tzinfo=local_tz)
-            
-            if ts.date() == today:
-                todays.append({"hr": ts.hour + ts.minute/60, "temp": r['temp'], "t": ts.strftime("%I:%M %p")})
-        except:
-            continue
-    
-    if len(todays) < 2:
-        return None, None, ["Need more data"], None
-    
-    todays.sort(key=lambda x: x['hr'])
-    
-    # MORNING ONLY 6AM-12PM
-    am = [r for r in todays if 6 <= r['hr'] <= 12]
-    
-    info = ["**Morning Readings:**"]
-    for r in reversed(am[-5:]):
-        info.append(f"  {r['t']}: {r['temp']:.1f}°F")
-    
-    if len(am) < 2:
-        info.append("⏳ Need morning data (6 AM - 12 PM)")
-        return None, None, info, None
-    
-    # ========== VOLATILITY GATE ==========
-    gate_pass, gate_reason, gate_diag = volatility_gate(am)
-    
-    if not gate_pass:
-        info.append(f"**⛔ BLOCKED:** {gate_reason}")
-        return None, None, info, {"pass": False, "reason": gate_reason, **gate_diag}
-    
-    # ========== RATE CALCULATION ==========
-    start, end = am[0], am[-1]
-    hrs = end['hr'] - start['hr']
-    rate = (end['temp'] - start['temp']) / hrs if hrs > 0 else 1.5
-    
-    info.append(f"**Rate:** {rate:.2f}°F/hr")
-    
-    to_peak = max(0, 14.5 - end['hr'])
-    factor = 0.8 if end['hr'] < 11 else 0.6 if end['hr'] < 12 else 0.5
-    remaining = rate * to_peak * factor
-    raw = end['temp'] + remaining
-    
-    # +1°F bias
-    low = raw + 1
-    high = low + 1
-    
-    info.append(f"**Projection:** {low:.0f}-{high:.0f}°F")
-    
-    return low, high, info, {"pass": True, "reason": gate_reason, **gate_diag}
+def get_buy_bracket(brackets, forecast):
+    """Find the bracket that contains the forecast"""
+    if not brackets or not forecast:
+        return None
+    for b in brackets:
+        if b['mid']:
+            if "above" in b['range'].lower():
+                if forecast >= b['mid'] - 1:
+                    return b
+            elif "below" in b['range'].lower():
+                if forecast <= b['mid'] + 1:
+                    return b
+            elif b['mid'] - 1 <= forecast <= b['mid'] + 1:
+                return b
+    return None
+
+# ========== FETCH NWS CURRENT TEMP ==========
+def fetch_nws_temp(station):
+    url = f"https://api.weather.gov/stations/{station}/observations/latest"
+    try:
+        resp = requests.get(url, headers={"User-Agent": "TempQuick/3.0"}, timeout=10)
+        if resp.status_code == 200:
+            p = resp.json().get("properties", {})
+            tc = p.get("temperature", {}).get("value")
+            if tc is not None:
+                return round(tc * 9/5 + 32, 1)
+    except:
+        pass
+    return None
 
 # ========== MAIN ==========
-now = datetime.now(pytz.timezone('US/Eastern'))
-st.title("🌡️ TEMP EDGE FINDER")
-st.caption(f"{now.strftime('%I:%M %p ET')} | v2.6 | Backup Weather API")
+now_et = datetime.now(pytz.timezone('US/Eastern'))
+hour = now_et.hour
+
+st.title("🌡️ TEMP QUICK TRADE")
+st.caption(f"v3.0 | {now_et.strftime('%I:%M %p ET')}")
+
+# ========== TIMING INDICATOR ==========
+if 6 <= hour < 8:
+    st.warning("⏳ **6-8 AM** — Forecast forming. Prices cheapest but risky.")
+elif 8 <= hour < 10:
+    st.success("🎯 **8-10 AM** — BEST TIME TO BUY. Forecast stable, prices still cheap!")
+elif 10 <= hour < 12:
+    st.info("📈 **10 AM-12 PM** — Good entry. Forecast locked, prices rising.")
+else:
+    st.error("⚠️ **After 12 PM** — Late entry. Prices already reflect outcome.")
+
+st.divider()
 
 city = st.selectbox("City", list(CITIES.keys()), format_func=lambda x: CITIES[x]['name'])
 cfg = CITIES[city]
 
-# ========== FETCH DATA WITH FALLBACK ==========
-# Try NWS first, then backup
-weather = fetch_weather(cfg['nws_station'])
-if not weather or weather.get('temp') is None:
-    weather = fetch_backup_weather(cfg['lat'], cfg['lon'])
-    if weather:
-        st.warning("⚠️ Using backup weather source (Open-Meteo)")
-
-history = fetch_nws_history(cfg['nws_station'])
-if not history:
-    history = fetch_backup_history(cfg['lat'], cfg['lon'], cfg['tz'])
-    if history:
-        st.info("📡 Using backup history source (Open-Meteo)")
-
 brackets = fetch_kalshi_brackets(cfg['series_ticker'])
+nws_temp = fetch_nws_temp(cfg['nws_station'])
 
-st.divider()
-
-# ========== WEATHER ==========
-st.subheader("🌤️ Current")
-if weather:
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Temp", f"{weather['temp']:.1f}°F" if weather['temp'] else "—")
-    c2.metric("Wind", weather['wind'] or "—")
-    c3.metric("Conditions", weather['desc'] or "—")
-    c4.metric("Source", weather.get('source', 'Unknown'))
-else:
-    st.error("❌ No weather data available from any source")
-
-st.divider()
-
-# ========== PREDICTION ==========
-st.subheader("🎯 YOUR PREDICTION")
-
-if history:
-    pred_low, pred_high, info, gate_result = predict_high(history, cfg['tz'])
-    
-    # Show gate status
-    if gate_result:
-        if gate_result['pass']:
-            st.success(f"✅ **GATE: PASS** — {gate_result['reason']}")
-        else:
-            st.error(f"⛔ **NO TRADE DAY** — {gate_result['reason']}")
-        
-        with st.expander("🔍 Volatility Diagnostics"):
-            if 'total_move' in gate_result:
-                st.write(f"**Total morning move:** {gate_result['total_move']:.1f}°F")
-            if 'max_reversal' in gate_result:
-                st.write(f"**Max reversal:** {gate_result['max_reversal']:.1f}°F (limit: {MAX_REVERSAL}°F)")
-            if 'zigzag_ratio' in gate_result:
-                st.write(f"**Zigzag ratio:** {gate_result['zigzag_ratio']:.0%} (limit: {MAX_ZIGZAG_RATIO:.0%})")
-            if 'reversal_count' in gate_result:
-                st.write(f"**Reversal count:** {gate_result['reversal_count']}")
-    
-    if pred_low and pred_high:
-        pred_mid = (pred_low + pred_high) / 2
-        
-        # Find which Kalshi bracket YOUR prediction falls into
-        your_bracket = None
-        if brackets:
-            for b in brackets:
-                if b['mid']:
-                    if b['mid'] - 1 <= pred_mid <= b['mid'] + 1:
-                        your_bracket = b
-                        break
-            # If no exact match, find closest
-            if not your_bracket:
-                for b in brackets:
-                    if b['mid'] and pred_mid >= b['mid'] - 1:
-                        your_bracket = b
-        
-        # Display prediction
-        st.markdown(f"### 🎯 {pred_low:.0f}-{pred_high:.0f}°F")
-        
-        if your_bracket:
-            st.success(f"**→ BUY YES on: {your_bracket['range']}** (currently {your_bracket['yes']:.0f}¢)")
-        
-        # Compare to market
-        if brackets:
-            mkt = calc_market_forecast(brackets)
-            if mkt:
-                diff = pred_mid - mkt
-                
-                st.markdown(f"**Market Forecast:** {mkt:.1f}°F | **Your Model:** {pred_mid:.1f}°F | **Diff:** {diff:+.1f}°F")
-                
-                mkt_bracket = None
-                for b in brackets:
-                    if b['mid'] and b['mid'] - 1 <= mkt <= b['mid'] + 1:
-                        mkt_bracket = b
-                        break
-                
-                if abs(diff) >= 2:
-                    st.success("## 🎯 EDGE FOUND!")
-                    
-                    if diff < 0:
-                        st.markdown("### You predict LOWER than market:")
-                        if your_bracket:
-                            st.markdown(f"✅ **BUY YES:** {your_bracket['range']} @ {your_bracket['yes']:.0f}¢")
-                        if mkt_bracket:
-                            st.markdown(f"❌ **BUY NO:** {mkt_bracket['range']} @ {100-mkt_bracket['yes']:.0f}¢")
-                    else:
-                        st.markdown("### You predict HIGHER than market:")
-                        if your_bracket:
-                            st.markdown(f"✅ **BUY YES:** {your_bracket['range']} @ {your_bracket['yes']:.0f}¢")
-                        if mkt_bracket:
-                            st.markdown(f"❌ **BUY NO:** {mkt_bracket['range']} @ {100-mkt_bracket['yes']:.0f}¢")
-                else:
-                    st.info("📊 Market already priced correctly — NO TRADE")
-        
-        with st.expander("📊 Calculation Details"):
-            for i in info:
-                st.markdown(i)
-    else:
-        if not gate_result or gate_result.get('pass', True):
-            st.warning("⏳ Need morning data (check back after 9-10 AM)")
-        with st.expander("📊 Data Details"):
-            for i in info:
-                st.markdown(i)
-else:
-    st.error("❌ No historical data available — cannot generate prediction")
-
-st.divider()
-
-# ========== BRACKETS ==========
-st.subheader("📊 Kalshi Brackets")
+# ========== MARKET FORECAST (THE HIDDEN NUMBER) ==========
+st.subheader("🎯 MARKET FORECAST")
 
 if brackets:
-    mkt = calc_market_forecast(brackets)
-    st.caption(f"Market Forecast: {mkt}°F" if mkt else "")
+    forecast = calc_market_forecast(brackets)
+    buy_bracket = get_buy_bracket(brackets, forecast)
     
-    for b in brackets:
-        c1, c2, c3 = st.columns([2,1,1])
-        c1.write(b['range'])
-        if b['yes'] >= 90:
-            c2.markdown(f"**YES {b['yes']:.0f}¢** ✅")
-        elif b['yes'] >= 50:
-            c2.markdown(f"**YES {b['yes']:.0f}¢**")
-        else:
-            c2.write(f"YES {b['yes']:.0f}¢")
-        c3.write(f"NO {100-b['yes']:.0f}¢")
+    if forecast:
+        st.markdown(f"# {forecast}°F")
+        st.caption("This is what Kalshi hides until you buy a contract")
+        
+        if buy_bracket:
+            st.success(f"### → BUY YES on: **{buy_bracket['range']}** @ {buy_bracket['yes']:.0f}¢")
+    else:
+        st.warning("Could not calculate forecast")
 else:
-    st.warning("No Kalshi brackets found for today")
+    st.error("❌ No Kalshi data available")
 
 st.divider()
-st.caption("⚠️ Not financial advice. For entertainment purposes only.")
+
+# ========== CURRENT NWS TEMP (SETTLEMENT SOURCE) ==========
+st.subheader("📡 NWS TEMP (Settlement Source)")
+
+if nws_temp:
+    st.markdown(f"# {nws_temp}°F")
+    st.caption("Official source for settlement")
+else:
+    st.warning("NWS data unavailable")
+
+st.divider()
+
+# ========== ALL BRACKETS ==========
+st.subheader("📊 All Brackets")
+
+if brackets:
+    forecast = calc_market_forecast(brackets)
+    buy_bracket = get_buy_bracket(brackets, forecast)
+    
+    for b in brackets:
+        is_buy = buy_bracket and b['range'] == buy_bracket['range']
+        
+        col1, col2, col3 = st.columns([2, 1, 1])
+        
+        if is_buy:
+            col1.markdown(f"**{b['range']}** 🎯")
+            col2.markdown(f"**YES {b['yes']:.0f}¢**")
+            col3.markdown(f"NO {100-b['yes']:.0f}¢")
+        else:
+            col1.write(b['range'])
+            col2.write(f"YES {b['yes']:.0f}¢")
+            col3.write(f"NO {100-b['yes']:.0f}¢")
+else:
+    st.warning("No brackets available")
+
+st.divider()
+
+# ========== QUICK GUIDE ==========
+with st.expander("📖 How to Use"):
+    st.markdown("""
+    **Your Strategy:**
+    1. Check MARKET FORECAST (free intel Kalshi hides)
+    2. Buy YES on that bracket between **8-10 AM**
+    3. Price rises as day confirms
+    4. Sell for profit or hold to settlement
+    
+    **Settlement:** NWS Climatological Report (official)
+    
+    **Best Entry:** 8-10 AM — forecast stable, prices cheap
+    """)
+
+st.caption("⚠️ Not financial advice")
