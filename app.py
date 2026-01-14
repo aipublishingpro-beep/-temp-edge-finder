@@ -161,7 +161,10 @@ if brackets:
         st.caption("This is what Kalshi hides until you buy a contract")
         
         if buy_bracket:
-            st.success(f"### → BUY YES on: **{buy_bracket['range']}** @ {buy_bracket['yes']:.0f}¢")
+            if buy_bracket['yes'] <= 85:
+                st.success(f"### → BUY YES on: **{buy_bracket['range']}** @ {buy_bracket['yes']:.0f}¢")
+            else:
+                st.warning(f"### ⚠️ No edge — {buy_bracket['range']} already at {buy_bracket['yes']:.0f}¢")
     else:
         st.warning("Could not calculate forecast")
 else:
