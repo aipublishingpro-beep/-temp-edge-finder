@@ -113,7 +113,63 @@ CITIES = {
     },
 }
 
-# ========== FETCH CURRENT OBSERVATIONS ==========
+# ========== FETCH TODAY'S HIGH/LOW FROM OBSERVATIONS ==========
+def fetch_todays_actual_high_low(station):
+    """Fetch today's actual recorded high and low from observations"""
+    url = f"https://api.weather.gov/stations/{station}/observations?limit=50"
+    try:
+        resp = requests.get(url, headers={"User-Agent": "TempEdge/5.0"}, timeout=10)
+        if resp.status_code != 200:
+            return None, None
+        
+        features = resp.json().get("features", [])
+        
+        # Get today's date in ET
+        today_et = datetime.now(pytz.timezone('US/Eastern')).date()
+        
+        today_temps = []
+        
+        for feature in features:
+            p = feature.get("properties", {})
+            
+            # Get observation time
+            obs_time = p.get("timestamp", "")
+            if not obs_time:
+                continue
+            
+            try:
+                obs_dt = datetime.fromisoformat(obs_time.replace('Z', '+00:00'))
+                obs_date = obs_dt.astimezone(pytz.timezone('US/Eastern')).date()
+                
+                # Only include today's observations
+                if obs_date != today_et:
+                    continue
+            except:
+                continue
+            
+            # Get temperature
+            temp_obj = p.get("temperature", {})
+            temp_c = temp_obj.get("value") if isinstance(temp_obj, dict) else None
+            
+            if temp_c is None:
+                continue
+            
+            temp_f = round(temp_c * 9/5 + 32, 1)
+            
+            # Skip clearly bad readings
+            if temp_f < -20 or temp_f > 130:
+                continue
+            if temp_f == 32.0 and temp_c == 0:
+                continue
+            
+            today_temps.append(temp_f)
+        
+        if today_temps:
+            return max(today_temps), min(today_temps)
+        
+        return None, None
+    except:
+        return None, None
 def fetch_station_observations(station):
     """Fetch recent observations and find most recent VALID reading"""
     # Fetch last 24 hours of observations instead of just "latest"
@@ -610,7 +666,7 @@ now_et = datetime.now(pytz.timezone('US/Eastern'))
 hour = now_et.hour
 
 st.title("🌡️ TEMP EDGE FINDER")
-st.caption(f"v5.3 — Our Model vs NWS vs Market | {now_et.strftime('%I:%M %p ET')}")
+st.caption(f"v5.4 — Our Model vs NWS vs Market | {now_et.strftime('%I:%M %p ET')}")
 
 # Timing indicator
 if 6 <= hour < 8:
@@ -642,6 +698,9 @@ with st.spinner("Fetching station data..."):
             obs = backup_obs
             used_station = backup_station
     
+    # Fetch today's actual recorded high/low
+    actual_high, actual_low = fetch_todays_actual_high_low(cfg['station'])
+    
     nws_forecast = fetch_nws_forecast(cfg['nws_office'], cfg['grid_x'], cfg['grid_y'])
     high_brackets = fetch_kalshi_brackets(cfg['high_ticker'])
     low_brackets = fetch_kalshi_brackets(cfg['low_ticker'])
@@ -659,6 +718,16 @@ if obs and obs.get("temp") is not None:
         st.metric("Wind", f"{obs['wind']} mph")
     with c4:
         st.metric("Clouds", f"{obs['cloud_pct']}%", help=obs.get('cloud_text', ''))
+    
+    # Show TODAY'S actual high/low recorded
+    if actual_high or actual_low:
+        c1, c2 = st.columns(2)
+        with c1:
+            if actual_high:
+                st.metric("📈 Today's High (so far)", f"{actual_high}°F")
+        with c2:
+            if actual_low:
+                st.metric("📉 Today's Low (so far)", f"{actual_low}°F")
     
     # Show observation age warning
     obs_age = obs.get('obs_age_mins')
@@ -690,8 +759,48 @@ st.divider()
 # Calculate our forecasts
 our_high = None
 our_low = None
-if obs and obs.get("temp") is not None:
+high_locked = False
+low_locked = False
+
+# Get current hour
+current_hour = datetime.now(pytz.timezone(cfg['tz'])).hour
+
+# HIGH TEMP LOGIC
+# If we have actual high and it's past peak hours (after 3 PM), use actual
+if actual_high is not None:
+    if current_hour >= 15:
+        # Past peak - high is locked
+        our_high = actual_high
+        high_locked = True
+    else:
+        # Still heating - use max of actual so far or forecast
+        forecast_high = calculate_our_forecast(obs, cfg['tz'], is_high=True) if obs and obs.get("temp") else None
+        if forecast_high:
+            our_high = max(actual_high, forecast_high)
+        else:
+            our_high = actual_high
+elif obs and obs.get("temp") is not None:
     our_high = calculate_our_forecast(obs, cfg['tz'], is_high=True)
+
+# LOW TEMP LOGIC
+# Low usually occurs around sunrise (5-7 AM) or before midnight
+if actual_low is not None:
+    if 7 <= current_hour <= 18:
+        # Daytime - low may have already occurred this morning
+        # But could drop more before midnight, so use forecast
+        forecast_low = calculate_our_forecast(obs, cfg['tz'], is_high=False) if obs and obs.get("temp") else None
+        if forecast_low:
+            our_low = min(actual_low, forecast_low)
+        else:
+            our_low = actual_low
+    else:
+        # Evening/night - low still developing
+        forecast_low = calculate_our_forecast(obs, cfg['tz'], is_high=False) if obs and obs.get("temp") else None
+        if forecast_low:
+            our_low = min(actual_low, forecast_low)
+        else:
+            our_low = actual_low
+elif obs and obs.get("temp") is not None:
     our_low = calculate_our_forecast(obs, cfg['tz'], is_high=False)
 
 market_high = calc_market_forecast(high_brackets)
@@ -709,11 +818,18 @@ with col_high:
     # Three forecasts comparison
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.metric("🎯 OUR MODEL", f"{our_high}°F" if our_high else "—")
+        label = "🎯 ACTUAL HIGH" if high_locked else "🎯 OUR MODEL"
+        st.metric(label, f"{our_high}°F" if our_high else "—")
     with c2:
         st.metric("NWS Forecast", f"{nws_high}°F" if nws_high else "—")
     with c3:
         st.metric("Market Implied", f"{market_high}°F" if market_high else "—")
+    
+    # Show if high is locked
+    if high_locked:
+        st.success(f"✅ **HIGH LOCKED: {our_high}°F** — Already recorded today")
+    elif actual_high:
+        st.info(f"📊 Today's high so far: {actual_high}°F (could go higher)")
     
     # Edge display
     display_edge(our_high, nws_high, market_high, "HIGH")
@@ -778,6 +894,10 @@ with col_low:
         st.metric("NWS Forecast", f"{nws_low}°F" if nws_low else "—")
     with c3:
         st.metric("Market Implied", f"{market_low}°F" if market_low else "—")
+    
+    # Show actual low so far
+    if actual_low:
+        st.info(f"📊 Today's low so far: {actual_low}°F — could drop more by midnight")
     
     # Edge display
     display_edge(our_low, nws_low, market_low, "LOW")
