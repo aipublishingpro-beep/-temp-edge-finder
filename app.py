@@ -1,72 +1,169 @@
 import streamlit as st
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 import re
+import math
 
-st.set_page_config(page_title="Temp Quick Trade", page_icon="🌡️", layout="wide")
+st.set_page_config(page_title="Temp Edge Finder", page_icon="🌡️", layout="wide")
 
-# ========== SIDEBAR LEGEND ==========
+# ========== SIDEBAR ==========
 with st.sidebar:
     st.header("🎯 EDGE COLORS")
     st.markdown("""
-    🟢 **GREEN** — NWS ≥2° higher than market
-    → Buy YES on higher brackets
+    🟢 **GREEN** — Our model ≥2° different
+    → Edge exists, bet our direction
     
-    🔴 **RED** — NWS ≥2° lower than market
-    → Buy YES on lower brackets
+    🟡 **YELLOW** — 1-2° difference
+    → Small edge, proceed with caution
     
-    ⚪ **GRAY** — Within ±2°
-    → No clear edge
+    ⚪ **GRAY** — Within ±1°
+    → No edge, skip
     """)
     
     st.divider()
     
-    st.header("⏰ BEST TIME TO BUY")
+    st.header("📊 OUR MODEL INPUTS")
     st.markdown("""
-    🟡 **6-8 AM** — Risky, forecast forming
-    🟢 **8-10 AM** — BEST TIME!
-    🔵 **10-12 PM** — Good, prices rising
-    🔴 **12 PM+** — Late, prices baked in
+    - Current temp
+    - Dew point (LOW floor)
+    - Cloud cover %
+    - Wind speed
+    - Hours to peak/sunrise
+    - Seasonal patterns
     """)
     
     st.divider()
-    st.caption("v4.0 | NWS Edge Finder")
+    st.caption("v5.0 | Our Model vs Market")
 
-# ========== CITIES ==========
+# ========== CITIES (with exact settlement stations) ==========
 CITIES = {
-    "NYC": {"name": "New York (Central Park)", "tz": "America/New_York", 
-            "high_ticker": "KXHIGHNY", "low_ticker": "KXLOWTNYC", "nws_station": "KNYC",
-            "nws_office": "OKX", "grid_x": 33, "grid_y": 37},
-    "Chicago": {"name": "Chicago (O'Hare)", "tz": "America/Chicago", 
-                "high_ticker": "KXHIGHCHI", "low_ticker": "KXLOWTCHI", "nws_station": "KORD",
-                "nws_office": "LOT", "grid_x": 65, "grid_y": 76},
-    "LA": {"name": "Los Angeles (LAX)", "tz": "America/Los_Angeles", 
-           "high_ticker": "KXHIGHLA", "low_ticker": "KXLOWTLAX", "nws_station": "KLAX",
-           "nws_office": "LOX", "grid_x": 149, "grid_y": 48},
-    "Miami": {"name": "Miami", "tz": "America/New_York", 
-              "high_ticker": "KXHIGHMIA", "low_ticker": "KXLOWTMIA", "nws_station": "KMIA",
-              "nws_office": "MFL", "grid_x": 109, "grid_y": 50},
-    "Denver": {"name": "Denver", "tz": "America/Denver", 
-               "high_ticker": "KXHIGHDEN", "low_ticker": "KXLOWTDEN", "nws_station": "KDEN",
-               "nws_office": "BOU", "grid_x": 62, "grid_y": 60},
+    "NYC": {
+        "name": "New York (Central Park)", 
+        "tz": "America/New_York",
+        "high_ticker": "KXHIGHNY", 
+        "low_ticker": "KXLOWTNYC", 
+        "station": "KNYC",  # Central Park - EXACT settlement station
+        "nws_office": "OKX", 
+        "grid_x": 33, 
+        "grid_y": 37,
+        "lat": 40.78,
+        "lon": -73.97
+    },
+    "Chicago": {
+        "name": "Chicago (O'Hare)", 
+        "tz": "America/Chicago",
+        "high_ticker": "KXHIGHCHI", 
+        "low_ticker": "KXLOWTCHI", 
+        "station": "KORD",
+        "nws_office": "LOT", 
+        "grid_x": 65, 
+        "grid_y": 76,
+        "lat": 41.98,
+        "lon": -87.90
+    },
+    "LA": {
+        "name": "Los Angeles (LAX)", 
+        "tz": "America/Los_Angeles",
+        "high_ticker": "KXHIGHLA", 
+        "low_ticker": "KXLOWTLAX", 
+        "station": "KLAX",
+        "nws_office": "LOX", 
+        "grid_x": 149, 
+        "grid_y": 48,
+        "lat": 33.94,
+        "lon": -118.41
+    },
+    "Miami": {
+        "name": "Miami", 
+        "tz": "America/New_York",
+        "high_ticker": "KXHIGHMIA", 
+        "low_ticker": "KXLOWTMIA", 
+        "station": "KMIA",
+        "nws_office": "MFL", 
+        "grid_x": 109, 
+        "grid_y": 50,
+        "lat": 25.79,
+        "lon": -80.29
+    },
+    "Denver": {
+        "name": "Denver", 
+        "tz": "America/Denver",
+        "high_ticker": "KXHIGHDEN", 
+        "low_ticker": "KXLOWTDEN", 
+        "station": "KDEN",
+        "nws_office": "BOU", 
+        "grid_x": 62, 
+        "grid_y": 60,
+        "lat": 39.85,
+        "lon": -104.65
+    },
 }
 
-# ========== FETCH NWS FORECAST (HIGH/LOW) ==========
+# ========== FETCH CURRENT OBSERVATIONS ==========
+def fetch_station_observations(station):
+    """Fetch current conditions from exact settlement station"""
+    url = f"https://api.weather.gov/stations/{station}/observations/latest"
+    try:
+        resp = requests.get(url, headers={"User-Agent": "TempEdge/5.0"}, timeout=10)
+        if resp.status_code == 200:
+            p = resp.json().get("properties", {})
+            
+            # Temperature (C to F)
+            temp_c = p.get("temperature", {}).get("value")
+            temp_f = round(temp_c * 9/5 + 32, 1) if temp_c is not None else None
+            
+            # Dew Point (C to F)
+            dew_c = p.get("dewpoint", {}).get("value")
+            dew_f = round(dew_c * 9/5 + 32, 1) if dew_c is not None else None
+            
+            # Wind Speed (m/s to mph)
+            wind_ms = p.get("windSpeed", {}).get("value")
+            wind_mph = round(wind_ms * 2.237, 1) if wind_ms is not None else 0
+            
+            # Cloud cover (text description)
+            cloud_text = p.get("textDescription", "").lower()
+            if "clear" in cloud_text or "sunny" in cloud_text:
+                cloud_pct = 0
+            elif "few" in cloud_text:
+                cloud_pct = 15
+            elif "scattered" in cloud_text:
+                cloud_pct = 40
+            elif "broken" in cloud_text:
+                cloud_pct = 70
+            elif "overcast" in cloud_text or "cloudy" in cloud_text:
+                cloud_pct = 95
+            else:
+                cloud_pct = 50  # Default
+            
+            # Observation time
+            obs_time = p.get("timestamp", "")
+            
+            return {
+                "temp": temp_f,
+                "dew_point": dew_f,
+                "wind": wind_mph,
+                "cloud_pct": cloud_pct,
+                "cloud_text": cloud_text,
+                "obs_time": obs_time
+            }
+    except Exception as e:
+        st.error(f"Station error: {e}")
+    return None
+
+# ========== FETCH NWS FORECAST ==========
 def fetch_nws_forecast(office, grid_x, grid_y):
-    """Fetch NWS forecast for high and low temps"""
+    """Fetch NWS official forecast"""
     url = f"https://api.weather.gov/gridpoints/{office}/{grid_x},{grid_y}/forecast"
     try:
-        resp = requests.get(url, headers={"User-Agent": "TempQuick/4.0"}, timeout=10)
+        resp = requests.get(url, headers={"User-Agent": "TempEdge/5.0"}, timeout=10)
         if resp.status_code == 200:
             periods = resp.json().get("properties", {}).get("periods", [])
             if periods:
-                # Find today's forecast
                 today_high = None
                 today_low = None
                 
-                for period in periods[:4]:  # Check first 4 periods
-                    name = period.get("name", "").lower()
+                for period in periods[:4]:
                     temp = period.get("temperature")
                     is_day = period.get("isDaytime", True)
                     
@@ -76,9 +173,113 @@ def fetch_nws_forecast(office, grid_x, grid_y):
                         today_low = temp
                 
                 return {"high": today_high, "low": today_low}
-    except Exception as e:
+    except:
         pass
     return {"high": None, "low": None}
+
+# ========== OUR FORECASTING MODEL ==========
+def calculate_our_forecast(obs, tz_name, is_high=True):
+    """
+    Our forecasting model using real-time station data
+    
+    HIGH TEMP MODEL:
+    - Base: Current temp
+    - Add: Solar heating potential (based on clouds, time to peak)
+    - Adjust: Wind mixing effect
+    
+    LOW TEMP MODEL:
+    - Floor: Dew point (temp rarely drops below this)
+    - Base: Current temp or projected evening temp
+    - Subtract: Radiative cooling (based on clouds, wind)
+    """
+    if obs is None or obs.get("temp") is None:
+        return None
+    
+    current_temp = obs["temp"]
+    dew_point = obs.get("dew_point") or (current_temp - 15)  # Estimate if missing
+    cloud_pct = obs.get("cloud_pct", 50)
+    wind = obs.get("wind", 5)
+    
+    # Get current hour in local timezone
+    tz = pytz.timezone(tz_name)
+    now = datetime.now(tz)
+    hour = now.hour
+    
+    if is_high:
+        # ===== HIGH TEMP MODEL =====
+        # Peak heating typically 2-4 PM (14-16)
+        peak_hour = 15
+        hours_to_peak = max(0, peak_hour - hour)
+        
+        if hour >= peak_hour:
+            # Past peak - high is likely current or slightly higher
+            heating_potential = max(0, 2 - (hour - peak_hour))
+        else:
+            # Before peak - calculate heating potential
+            # Clear sky: ~3-5°F per hour before noon, ~1-2°F per hour after
+            if hour < 12:
+                base_heating_rate = 3.5  # °F per hour morning
+            else:
+                base_heating_rate = 1.5  # °F per hour afternoon
+            
+            # Cloud adjustment (clouds block solar heating)
+            cloud_factor = 1 - (cloud_pct / 100) * 0.7
+            
+            # Wind adjustment (wind mixes air, reduces surface heating)
+            wind_factor = 1 - min(0.3, wind / 30)
+            
+            heating_potential = hours_to_peak * base_heating_rate * cloud_factor * wind_factor
+        
+        # January seasonal cap (sun angle limits heating)
+        month = now.month
+        if month in [12, 1, 2]:
+            heating_potential = min(heating_potential, 12)  # Winter cap
+        elif month in [6, 7, 8]:
+            heating_potential = min(heating_potential, 20)  # Summer cap
+        else:
+            heating_potential = min(heating_potential, 15)  # Spring/Fall cap
+        
+        forecast_high = current_temp + heating_potential
+        return round(forecast_high, 0)
+    
+    else:
+        # ===== LOW TEMP MODEL =====
+        # Key insight: Temp rarely drops below dew point
+        
+        # Hours until sunrise (approx 7 AM)
+        if hour >= 19:  # Evening
+            hours_of_cooling = (24 - hour) + 7
+        elif hour < 7:  # Pre-dawn
+            hours_of_cooling = 7 - hour
+        else:  # Daytime - low may have already occurred
+            hours_of_cooling = 0
+        
+        # Base cooling rate (clear, calm night)
+        base_cooling_rate = 2.0  # °F per hour
+        
+        # Cloud adjustment (clouds TRAP heat, reduce cooling)
+        cloud_factor = 1 - (cloud_pct / 100) * 0.8
+        
+        # Wind adjustment (wind PREVENTS radiative cooling)
+        wind_factor = 1 - min(0.5, wind / 20)
+        
+        cooling_potential = hours_of_cooling * base_cooling_rate * cloud_factor * wind_factor
+        
+        # Calculate projected low
+        projected_low = current_temp - cooling_potential
+        
+        # DEW POINT FLOOR - temp rarely drops more than 2-3° below dew point
+        dew_floor = dew_point - 2
+        
+        # Low is the HIGHER of: projected cooling OR dew point floor
+        forecast_low = max(projected_low, dew_floor)
+        
+        # If it's already morning, low may have occurred
+        if 5 <= hour <= 9:
+            # Low likely within 2-3° of current temp
+            forecast_low = min(forecast_low, current_temp + 2)
+        
+        return round(forecast_low, 0)
 
 # ========== FETCH KALSHI BRACKETS ==========
 def fetch_kalshi_brackets(series_ticker):
@@ -153,20 +354,15 @@ def fetch_kalshi_brackets(series_ticker):
         return None
 
 def calc_market_forecast(brackets):
-    """Calculate weighted average forecast from market brackets"""
     if not brackets:
         return None
-    
     weighted_sum = 0
     total_prob = 0
-    
     for b in brackets:
         prob = b['yes'] / 100
         mid = b['mid']
-        
         if mid is None or prob <= 0:
             continue
-        
         range_text = b['range'].lower()
         if "or above" in range_text:
             adjusted_mid = mid + 2.5
@@ -174,73 +370,95 @@ def calc_market_forecast(brackets):
             adjusted_mid = mid - 2.5
         else:
             adjusted_mid = mid
-        
         weighted_sum += prob * adjusted_mid
         total_prob += prob
-    
     if total_prob > 0:
         return round(weighted_sum / total_prob, 1)
     return None
 
-def get_edge_bracket(brackets, nws_temp, market_temp):
-    """Find the bracket to buy based on NWS vs Market gap"""
-    if not brackets or nws_temp is None or market_temp is None:
-        return None, None
-    
-    gap = nws_temp - market_temp
-    
-    # Find bracket containing NWS forecast
-    best_bracket = None
+def find_bracket_for_temp(brackets, temp):
+    """Find which bracket a temperature falls into"""
+    if not brackets or temp is None:
+        return None
     for b in brackets:
         mid = b['mid']
         if mid is None:
             continue
         range_text = b['range'].lower()
-        
-        # Check if NWS temp falls in this bracket
         if "or above" in range_text:
-            if nws_temp >= mid - 0.5:
-                best_bracket = b
+            if temp >= mid - 0.5:
+                return b
         elif "or below" in range_text:
-            if nws_temp <= mid + 0.5:
-                best_bracket = b
+            if temp <= mid + 0.5:
+                return b
         else:
-            # Regular bracket - check if within range
-            if abs(nws_temp - mid) <= 1.5:
-                best_bracket = b
-    
-    return best_bracket, gap
-
-# ========== FETCH NWS CURRENT TEMP ==========
-def fetch_nws_temp(station):
-    url = f"https://api.weather.gov/stations/{station}/observations/latest"
-    try:
-        resp = requests.get(url, headers={"User-Agent": "TempQuick/4.0"}, timeout=10)
-        if resp.status_code == 200:
-            p = resp.json().get("properties", {})
-            tc = p.get("temperature", {}).get("value")
-            if tc is not None:
-                return round(tc * 9/5 + 32, 1)
-    except:
-        pass
+            if abs(temp - mid) <= 1.0:
+                return b
     return None
+
+# ========== DISPLAY EDGE BOX ==========
+def display_edge(our_forecast, nws_forecast, market_forecast, label):
+    """Display edge comparison with color coding"""
+    if our_forecast is None:
+        st.warning(f"Cannot calculate {label} forecast")
+        return
+    
+    # Calculate edges
+    vs_nws = our_forecast - nws_forecast if nws_forecast else None
+    vs_market = our_forecast - market_forecast if market_forecast else None
+    
+    # Determine edge magnitude (use vs market as primary)
+    edge = vs_market if vs_market is not None else vs_nws
+    
+    if edge is None:
+        color = "#383d41"
+        text_color = "#e2e3e5"
+        icon = "⚪"
+        edge_text = "NO DATA"
+        action = "Cannot compare"
+    elif abs(edge) >= 2:
+        color = "#155724"
+        text_color = "#d4edda"
+        icon = "🟢"
+        direction = "HIGHER" if edge > 0 else "LOWER"
+        edge_text = f"{edge:+.0f}° EDGE"
+        action = f"Our model says {direction} → BUY {direction} BRACKETS"
+    elif abs(edge) >= 1:
+        color = "#856404"
+        text_color = "#fff3cd"
+        icon = "🟡"
+        direction = "HIGHER" if edge > 0 else "LOWER"
+        edge_text = f"{edge:+.0f}° SMALL EDGE"
+        action = f"Slight {direction.lower()} lean, proceed with caution"
+    else:
+        color = "#383d41"
+        text_color = "#e2e3e5"
+        icon = "⚪"
+        edge_text = f"{edge:+.0f}° NO EDGE"
+        action = "Market is fairly priced"
+    
+    st.markdown(f"""
+    <div style="background-color: {color}; padding: 15px; border-radius: 8px; margin: 10px 0;">
+        <span style="color: {text_color}; font-size: 24px; font-weight: bold;">{icon} {edge_text}</span><br>
+        <span style="color: {text_color};">{action}</span>
+    </div>""", unsafe_allow_html=True)
 
 # ========== MAIN ==========
 now_et = datetime.now(pytz.timezone('US/Eastern'))
 hour = now_et.hour
 
-st.title("🌡️ TEMP QUICK TRADE")
-st.caption(f"v4.0 — NWS Edge Finder | {now_et.strftime('%I:%M %p ET')}")
+st.title("🌡️ TEMP EDGE FINDER")
+st.caption(f"v5.0 — Our Model vs NWS vs Market | {now_et.strftime('%I:%M %p ET')}")
 
 # Timing indicator
 if 6 <= hour < 8:
-    st.warning("⏳ **6-8 AM** — Forecast forming. Prices cheapest but risky.")
+    st.warning("⏳ **6-8 AM** — Early. LOW may be locked, HIGH still developing.")
 elif 8 <= hour < 10:
-    st.success("🎯 **8-10 AM** — BEST TIME TO BUY. Forecast stable, prices still cheap!")
-elif 10 <= hour < 12:
-    st.info("📈 **10 AM-12 PM** — Good entry. Forecast locked, prices rising.")
+    st.success("🎯 **8-10 AM** — BEST TIME. LOW confirmed, HIGH heating underway.")
+elif 10 <= hour < 14:
+    st.info("📈 **10 AM-2 PM** — Good for HIGH temp bets. Track heating.")
 else:
-    st.error("⚠️ **After 12 PM** — Late entry. Prices already reflect outcome.")
+    st.error("⚠️ **After 2 PM** — Late for HIGH. LOW markets open for tomorrow.")
 
 st.divider()
 
@@ -249,19 +467,45 @@ city = st.selectbox("City", list(CITIES.keys()), format_func=lambda x: CITIES[x]
 cfg = CITIES[city]
 
 # Fetch all data
-high_brackets = fetch_kalshi_brackets(cfg['high_ticker'])
-low_brackets = fetch_kalshi_brackets(cfg['low_ticker'])
-nws_forecast = fetch_nws_forecast(cfg['nws_office'], cfg['grid_x'], cfg['grid_y'])
-nws_current = fetch_nws_temp(cfg['nws_station'])
+with st.spinner("Fetching station data..."):
+    obs = fetch_station_observations(cfg['station'])
+    nws_forecast = fetch_nws_forecast(cfg['nws_office'], cfg['grid_x'], cfg['grid_y'])
+    high_brackets = fetch_kalshi_brackets(cfg['high_ticker'])
+    low_brackets = fetch_kalshi_brackets(cfg['low_ticker'])
 
-# Current temp display
-st.subheader("📡 CURRENT TEMP")
-if nws_current:
-    st.markdown(f"### {nws_current}°F")
+# ========== CURRENT CONDITIONS ==========
+st.subheader(f"📡 LIVE: {cfg['station']} Station")
+
+if obs:
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric("Current Temp", f"{obs['temp']}°F")
+    with c2:
+        st.metric("Dew Point", f"{obs['dew_point']}°F" if obs['dew_point'] else "—")
+    with c3:
+        st.metric("Wind", f"{obs['wind']} mph")
+    with c4:
+        st.metric("Clouds", f"{obs['cloud_pct']}%", help=obs.get('cloud_text', ''))
+    
+    # Dew point insight for LOW
+    if obs['dew_point']:
+        spread = obs['temp'] - obs['dew_point']
+        if spread < 5:
+            st.info(f"💧 **Dew Point Spread: {spread:.0f}°F** — Humid. LOW floor is ~{obs['dew_point']-2:.0f}°F")
+        else:
+            st.info(f"💧 **Dew Point Spread: {spread:.0f}°F** — Dry. More cooling potential tonight.")
 else:
-    st.warning("NWS current temp unavailable")
+    st.error("❌ Cannot fetch station data")
 
 st.divider()
+
+# Calculate our forecasts
+our_high = calculate_our_forecast(obs, cfg['tz'], is_high=True) if obs else None
+our_low = calculate_our_forecast(obs, cfg['tz'], is_high=False) if obs else None
+market_high = calc_market_forecast(high_brackets)
+market_low = calc_market_forecast(low_brackets)
+nws_high = nws_forecast.get("high")
+nws_low = nws_forecast.get("low")
 
 # ========== TWO COLUMN LAYOUT ==========
 col_high, col_low = st.columns(2)
@@ -270,133 +514,104 @@ col_high, col_low = st.columns(2)
 with col_high:
     st.subheader("🔥 HIGH TEMP")
     
-    nws_high = nws_forecast.get("high")
-    market_high = calc_market_forecast(high_brackets) if high_brackets else None
-    
-    # Display comparison
-    c1, c2 = st.columns(2)
+    # Three forecasts comparison
+    c1, c2, c3 = st.columns(3)
     with c1:
-        st.metric("NWS Forecast", f"{nws_high}°F" if nws_high else "—")
+        st.metric("🎯 OUR MODEL", f"{our_high}°F" if our_high else "—")
     with c2:
+        st.metric("NWS Forecast", f"{nws_high}°F" if nws_high else "—")
+    with c3:
         st.metric("Market Implied", f"{market_high}°F" if market_high else "—")
     
-    # Calculate edge and display
-    if nws_high and market_high:
-        gap = nws_high - market_high
-        
-        if gap >= 2:
-            st.markdown(f"""
-            <div style="background-color: #155724; padding: 15px; border-radius: 8px; margin: 10px 0;">
-                <span style="color: #d4edda; font-size: 24px; font-weight: bold;">🟢 +{gap:.1f}° EDGE</span><br>
-                <span style="color: #d4edda;">NWS higher than market → BUY HIGHER BRACKETS</span>
-            </div>""", unsafe_allow_html=True)
-        elif gap <= -2:
-            st.markdown(f"""
-            <div style="background-color: #721c24; padding: 15px; border-radius: 8px; margin: 10px 0;">
-                <span style="color: #f8d7da; font-size: 24px; font-weight: bold;">🔴 {gap:.1f}° EDGE</span><br>
-                <span style="color: #f8d7da;">NWS lower than market → BUY LOWER BRACKETS</span>
-            </div>""", unsafe_allow_html=True)
-        else:
-            st.markdown(f"""
-            <div style="background-color: #383d41; padding: 15px; border-radius: 8px; margin: 10px 0;">
-                <span style="color: #e2e3e5; font-size: 24px; font-weight: bold;">⚪ {gap:+.1f}° NO EDGE</span><br>
-                <span style="color: #e2e3e5;">Market aligned with NWS forecast</span>
-            </div>""", unsafe_allow_html=True)
+    # Edge display
+    display_edge(our_high, nws_high, market_high, "HIGH")
     
-    # Show brackets
+    # Recommended bracket
+    if our_high and high_brackets:
+        our_bracket = find_bracket_for_temp(high_brackets, our_high)
+        if our_bracket:
+            st.markdown(f"**🎯 BUY:** {our_bracket['range']} @ {our_bracket['yes']:.0f}¢")
+    
+    # All brackets
     if high_brackets:
         with st.expander("View All Brackets"):
             for b in high_brackets:
-                # Highlight bracket containing NWS forecast
-                if nws_high and b['mid']:
-                    in_bracket = abs(nws_high - b['mid']) <= 1.5
-                    if "above" in b['range'].lower() and nws_high >= b['mid'] - 0.5:
-                        in_bracket = True
-                    if "below" in b['range'].lower() and nws_high <= b['mid'] + 0.5:
-                        in_bracket = True
-                else:
-                    in_bracket = False
-                
-                if in_bracket:
-                    st.markdown(f"**🎯 {b['range']}** — YES {b['yes']:.0f}¢")
+                highlight = our_high and b['mid'] and abs(our_high - b['mid']) <= 1.5
+                if highlight:
+                    st.markdown(f"**→ {b['range']}** — YES {b['yes']:.0f}¢")
                 else:
                     st.write(f"{b['range']} — YES {b['yes']:.0f}¢")
-    else:
-        st.error("No high temp data")
 
 # ========== LOW TEMP ==========
 with col_low:
     st.subheader("❄️ LOW TEMP")
     
-    nws_low = nws_forecast.get("low")
-    market_low = calc_market_forecast(low_brackets) if low_brackets else None
-    
-    # Display comparison
-    c1, c2 = st.columns(2)
+    # Three forecasts comparison
+    c1, c2, c3 = st.columns(3)
     with c1:
-        st.metric("NWS Forecast", f"{nws_low}°F" if nws_low else "—")
+        st.metric("🎯 OUR MODEL", f"{our_low}°F" if our_low else "—")
     with c2:
+        st.metric("NWS Forecast", f"{nws_low}°F" if nws_low else "—")
+    with c3:
         st.metric("Market Implied", f"{market_low}°F" if market_low else "—")
     
-    # Calculate edge and display
-    if nws_low and market_low:
-        gap = nws_low - market_low
-        
-        if gap >= 2:
-            st.markdown(f"""
-            <div style="background-color: #155724; padding: 15px; border-radius: 8px; margin: 10px 0;">
-                <span style="color: #d4edda; font-size: 24px; font-weight: bold;">🟢 +{gap:.1f}° EDGE</span><br>
-                <span style="color: #d4edda;">NWS higher than market → BUY HIGHER BRACKETS</span>
-            </div>""", unsafe_allow_html=True)
-        elif gap <= -2:
-            st.markdown(f"""
-            <div style="background-color: #721c24; padding: 15px; border-radius: 8px; margin: 10px 0;">
-                <span style="color: #f8d7da; font-size: 24px; font-weight: bold;">🔴 {gap:.1f}° EDGE</span><br>
-                <span style="color: #f8d7da;">NWS lower than market → BUY LOWER BRACKETS</span>
-            </div>""", unsafe_allow_html=True)
-        else:
-            st.markdown(f"""
-            <div style="background-color: #383d41; padding: 15px; border-radius: 8px; margin: 10px 0;">
-                <span style="color: #e2e3e5; font-size: 24px; font-weight: bold;">⚪ {gap:+.1f}° NO EDGE</span><br>
-                <span style="color: #e2e3e5;">Market aligned with NWS forecast</span>
-            </div>""", unsafe_allow_html=True)
+    # Edge display
+    display_edge(our_low, nws_low, market_low, "LOW")
     
-    # Show brackets
+    # Recommended bracket
+    if our_low and low_brackets:
+        our_bracket = find_bracket_for_temp(low_brackets, our_low)
+        if our_bracket:
+            st.markdown(f"**🎯 BUY:** {our_bracket['range']} @ {our_bracket['yes']:.0f}¢")
+    
+    # All brackets
     if low_brackets:
         with st.expander("View All Brackets"):
             for b in low_brackets:
-                if nws_low and b['mid']:
-                    in_bracket = abs(nws_low - b['mid']) <= 1.5
-                    if "above" in b['range'].lower() and nws_low >= b['mid'] - 0.5:
-                        in_bracket = True
-                    if "below" in b['range'].lower() and nws_low <= b['mid'] + 0.5:
-                        in_bracket = True
-                else:
-                    in_bracket = False
-                
-                if in_bracket:
-                    st.markdown(f"**🎯 {b['range']}** — YES {b['yes']:.0f}¢")
+                highlight = our_low and b['mid'] and abs(our_low - b['mid']) <= 1.5
+                if highlight:
+                    st.markdown(f"**→ {b['range']}** — YES {b['yes']:.0f}¢")
                 else:
                     st.write(f"{b['range']} — YES {b['yes']:.0f}¢")
-    else:
-        st.error("No low temp data")
 
 st.divider()
 
-# Quick guide
-with st.expander("📖 How This Works"):
+# ========== MODEL EXPLANATION ==========
+with st.expander("📊 How Our Model Works"):
     st.markdown("""
-    **Edge = NWS Forecast vs Market Implied Price**
+    **HIGH TEMP MODEL:**
+    ```
+    Forecast = Current Temp + Heating Potential
     
-    - **NWS Forecast**: What the settlement source predicts
-    - **Market Implied**: Probability-weighted average from Kalshi
-    - **Gap ≥2°**: Potential mispricing opportunity
+    Heating Potential = Hours to Peak × Base Rate × Cloud Factor × Wind Factor
+    - Clear skies = more heating
+    - Light wind = more heating
+    - Winter cap: +12°F max
+    ```
     
-    🟢 **GREEN**: NWS says higher → buy higher brackets
-    🔴 **RED**: NWS says lower → buy lower brackets
-    ⚪ **GRAY**: No significant gap → no clear edge
+    **LOW TEMP MODEL:**
+    ```
+    Forecast = MAX(Projected Cooling, Dew Point Floor)
     
-    **Settlement**: NWS Climatological Report (official)
+    - Dew Point sets the FLOOR (temp rarely drops below)
+    - Clear skies = more cooling
+    - Light wind = more cooling
+    - Cloudy/windy = stays warmer
+    ```
+    
+    **Edge Detection:**
+    - 🟢 ≥2° difference = Strong edge
+    - 🟡 1-2° difference = Small edge
+    - ⚪ <1° difference = No edge
     """)
 
-st.caption("⚠️ Not financial advice")
+# ========== SETTLEMENT RULES REMINDER ==========
+with st.expander("📋 Kalshi Settlement Rules"):
+    st.markdown("""
+    - **Source:** NWS official station (first non-preliminary report)
+    - **Precision:** Full precision, no rounding
+    - **Expiration:** 10:00 AM ET next day
+    - **Revisions:** Post-expiration revisions don't count
+    """)
+
+st.caption("⚠️ Not financial advice. Model is experimental.")
