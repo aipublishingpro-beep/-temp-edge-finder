@@ -40,7 +40,7 @@ with st.sidebar:
     """)
     
     st.divider()
-    st.caption("v3.2 | High & Low Temps")
+    st.caption("v3.3 | High & Low Temps")
 
 # ========== CITIES ==========
 CITIES = {
@@ -103,14 +103,12 @@ def fetch_kalshi_brackets(series_ticker):
         return None
 
 def calc_market_forecast(brackets):
-    """Get forecast from the bracket with highest YES price"""
     if not brackets:
         return None
     buy_bracket = max(brackets, key=lambda b: b['yes'])
     return buy_bracket['mid']
 
 def get_buy_bracket(brackets):
-    """Find the bracket with the highest YES price (market's pick)"""
     if not brackets:
         return None
     return max(brackets, key=lambda b: b['yes'])
@@ -134,7 +132,7 @@ now_et = datetime.now(pytz.timezone('US/Eastern'))
 hour = now_et.hour
 
 st.title("🌡️ TEMP QUICK TRADE")
-st.caption(f"v3.2 | {now_et.strftime('%I:%M %p ET')}")
+st.caption(f"v3.3 | {now_et.strftime('%I:%M %p ET')}")
 
 # ========== TIMING INDICATOR ==========
 if 6 <= hour < 8:
@@ -148,49 +146,17 @@ else:
 
 st.divider()
 
-# ========== CITY & FORECAST TYPE SELECTION ==========
-col_city, col_type = st.columns([2, 1])
-with col_city:
-    city = st.selectbox("City", list(CITIES.keys()), format_func=lambda x: CITIES[x]['name'])
-with col_type:
-    temp_type = st.radio("Forecast", ["High", "Low"], horizontal=True)
-
+# ========== CITY SELECTION ==========
+city = st.selectbox("City", list(CITIES.keys()), format_func=lambda x: CITIES[x]['name'])
 cfg = CITIES[city]
 
-# Select the appropriate ticker based on forecast type
-ticker_key = "high_ticker" if temp_type == "High" else "low_ticker"
-brackets = fetch_kalshi_brackets(cfg[ticker_key])
+# Fetch both high and low brackets
+high_brackets = fetch_kalshi_brackets(cfg['high_ticker'])
+low_brackets = fetch_kalshi_brackets(cfg['low_ticker'])
 nws_temp = fetch_nws_temp(cfg['nws_station'])
 
-# ========== MARKET FORECAST (THE HIDDEN NUMBER) ==========
-temp_label = "HIGH" if temp_type == "High" else "LOW"
-temp_icon = "🔥" if temp_type == "High" else "❄️"
-
-st.subheader(f"{temp_icon} MARKET FORECAST ({temp_label})")
-
-if brackets:
-    forecast = calc_market_forecast(brackets)
-    buy_bracket = get_buy_bracket(brackets)
-    
-    if forecast:
-        st.markdown(f"# {forecast}°F")
-        st.caption(f"Predicted {temp_type.lower()} temperature — what Kalshi hides until you buy")
-        
-        if buy_bracket:
-            if buy_bracket['yes'] <= 85:
-                st.success(f"### → BUY YES on: **{buy_bracket['range']}** @ {buy_bracket['yes']:.0f}¢")
-            else:
-                st.warning(f"### ⚠️ No edge — {buy_bracket['range']} already at {buy_bracket['yes']:.0f}¢")
-    else:
-        st.warning("Could not calculate forecast")
-else:
-    st.error(f"❌ No Kalshi data available for {temp_type.lower()} temp")
-
-st.divider()
-
-# ========== CURRENT NWS TEMP (SETTLEMENT SOURCE) ==========
+# ========== CURRENT NWS TEMP ==========
 st.subheader("📡 NWS CURRENT TEMP")
-
 if nws_temp:
     st.markdown(f"# {nws_temp}°F")
     st.caption("Current reading from official settlement source")
@@ -199,50 +165,91 @@ else:
 
 st.divider()
 
-# ========== ALL BRACKETS ==========
-st.subheader(f"📊 All {temp_type} Temp Brackets")
+# ========== TWO COLUMN LAYOUT: HIGH & LOW ==========
+col_high, col_low = st.columns(2)
 
-if brackets:
-    forecast = calc_market_forecast(brackets)
-    buy_bracket = get_buy_bracket(brackets)
+# ========== HIGH TEMP COLUMN ==========
+with col_high:
+    st.subheader("🔥 HIGH TEMP FORECAST")
     
-    for b in brackets:
-        is_buy = buy_bracket and b['range'] == buy_bracket['range']
+    if high_brackets:
+        high_forecast = calc_market_forecast(high_brackets)
+        high_buy = get_buy_bracket(high_brackets)
         
-        if is_buy:
-            bg_color = "#FF8C00" if temp_type == "High" else "#1E90FF"
-            st.markdown(
-                f"""<div style="background-color: {bg_color}; padding: 10px; border-radius: 8px; margin: 5px 0;">
-                <span style="color: white; font-weight: bold;">{b['range']} 🎯</span>
-                <span style="color: white; font-weight: bold; margin-left: 40px;">YES {b['yes']:.0f}¢</span>
-                <span style="color: white; margin-left: 40px;">NO {100-b['yes']:.0f}¢</span>
-                </div>""",
-                unsafe_allow_html=True
-            )
-        else:
-            col1, col2, col3 = st.columns([2, 1, 1])
-            col1.write(b['range'])
-            col2.write(f"YES {b['yes']:.0f}¢")
-            col3.write(f"NO {100-b['yes']:.0f}¢")
-else:
-    st.warning("No brackets available")
+        if high_forecast:
+            st.markdown(f"# {high_forecast}°F")
+            st.caption("Predicted high temperature")
+            
+            if high_buy:
+                if high_buy['yes'] <= 85:
+                    st.success(f"→ BUY YES: **{high_buy['range']}** @ {high_buy['yes']:.0f}¢")
+                else:
+                    st.warning(f"⚠️ No edge — {high_buy['range']} @ {high_buy['yes']:.0f}¢")
+        
+        st.markdown("**All High Temp Brackets:**")
+        for b in high_brackets:
+            is_buy = high_buy and b['range'] == high_buy['range']
+            if is_buy:
+                st.markdown(
+                    f"""<div style="background-color: #FF8C00; padding: 8px; border-radius: 6px; margin: 4px 0;">
+                    <span style="color: white; font-weight: bold;">🎯 {b['range']}</span><br>
+                    <span style="color: white;">YES {b['yes']:.0f}¢ | NO {100-b['yes']:.0f}¢</span>
+                    </div>""",
+                    unsafe_allow_html=True
+                )
+            else:
+                st.write(f"{b['range']} — YES {b['yes']:.0f}¢ | NO {100-b['yes']:.0f}¢")
+    else:
+        st.error("❌ No high temp data available")
+
+# ========== LOW TEMP COLUMN ==========
+with col_low:
+    st.subheader("❄️ LOW TEMP FORECAST")
+    
+    if low_brackets:
+        low_forecast = calc_market_forecast(low_brackets)
+        low_buy = get_buy_bracket(low_brackets)
+        
+        if low_forecast:
+            st.markdown(f"# {low_forecast}°F")
+            st.caption("Predicted low temperature")
+            
+            if low_buy:
+                if low_buy['yes'] <= 85:
+                    st.success(f"→ BUY YES: **{low_buy['range']}** @ {low_buy['yes']:.0f}¢")
+                else:
+                    st.warning(f"⚠️ No edge — {low_buy['range']} @ {low_buy['yes']:.0f}¢")
+        
+        st.markdown("**All Low Temp Brackets:**")
+        for b in low_brackets:
+            is_buy = low_buy and b['range'] == low_buy['range']
+            if is_buy:
+                st.markdown(
+                    f"""<div style="background-color: #FF8C00; padding: 8px; border-radius: 6px; margin: 4px 0;">
+                    <span style="color: white; font-weight: bold;">🎯 {b['range']}</span><br>
+                    <span style="color: white;">YES {b['yes']:.0f}¢ | NO {100-b['yes']:.0f}¢</span>
+                    </div>""",
+                    unsafe_allow_html=True
+                )
+            else:
+                st.write(f"{b['range']} — YES {b['yes']:.0f}¢ | NO {100-b['yes']:.0f}¢")
+    else:
+        st.error("❌ No low temp data available")
 
 st.divider()
 
 # ========== QUICK GUIDE ==========
 with st.expander("📖 How to Use"):
-    st.markdown(f"""
-    **Your Strategy ({temp_type} Temp):**
-    1. Check MARKET FORECAST (free intel Kalshi hides)
-    2. Buy YES on that bracket between **8-10 AM**
+    st.markdown("""
+    **Your Strategy:**
+    1. Check both HIGH and LOW forecasts
+    2. Buy YES on orange-highlighted brackets between **8-10 AM**
     3. Price rises as day confirms
     4. Sell for profit or hold to settlement
     
     **Settlement:** NWS Climatological Report (official)
     
     **Best Entry:** 8-10 AM — forecast stable, prices cheap
-    
-    **Toggle:** Use the High/Low radio button to switch forecasts
     """)
 
 st.caption("⚠️ Not financial advice")
