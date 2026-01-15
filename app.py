@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 from datetime import datetime
 import pytz
+import re
 
 st.set_page_config(page_title="Temp Quick Trade", page_icon="🌡️", layout="wide")
 
@@ -79,23 +80,43 @@ def fetch_kalshi_brackets(series_ticker):
         for m in today_markets:
             txt = m.get("subtitle", "") or m.get("title", "")
             mid = None
+            display = txt
             tl = txt.lower()
             
-            if "below" in tl:
-                try: mid = int(''.join(filter(str.isdigit, txt.split('°')[0])))
-                except: mid = 30
-            elif "above" in tl:
-                try: mid = int(''.join(filter(str.isdigit, txt.split('°')[0])))
-                except: mid = 60
-            elif "to" in tl:
+            # Format 1: "47° to 48°" or "to" style
+            if " to " in tl and "below" not in tl and "above" not in tl:
                 try:
                     p = txt.replace('°','').lower().split('to')
-                    mid = (int(''.join(filter(str.isdigit, p[0]))) + int(''.join(filter(str.isdigit, p[1])))) / 2
+                    low = int(''.join(filter(str.isdigit, p[0])))
+                    high = int(''.join(filter(str.isdigit, p[1])))
+                    mid = (low + high) / 2
+                    display = f"{low}° to {high}°"
+                except: mid = 45
+            # Format 2: "40° or below" or "<19°"
+            elif "below" in tl or "<" in txt:
+                try: 
+                    mid = int(''.join(filter(str.isdigit, txt.split('°')[0].split('<')[-1])))
+                    display = f"{int(mid)}° or below"
+                except: mid = 30
+            # Format 3: "49° or above" or ">26°"  
+            elif "above" in tl or ">" in txt:
+                try: 
+                    mid = int(''.join(filter(str.isdigit, txt.split('°')[0].split('>')[-1])))
+                    display = f"{int(mid)}° or above"
+                except: mid = 60
+            # Format 4: "25-26°" range style
+            elif "-" in txt and "°" in txt:
+                try:
+                    match = re.search(r'(\d+)-(\d+)°', txt)
+                    if match:
+                        low, high = int(match.group(1)), int(match.group(2))
+                        mid = (low + high) / 2
+                        display = f"{low}° to {high}°"
                 except: mid = 45
             
             yb, ya = m.get("yes_bid", 0), m.get("yes_ask", 0)
             yp = (yb + ya) / 2 if yb and ya else ya or yb or 0
-            brackets.append({"range": txt, "mid": mid, "yes": yp})
+            brackets.append({"range": display, "mid": mid, "yes": yp})
         
         brackets.sort(key=lambda x: x['mid'] or 0)
         return brackets
