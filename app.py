@@ -10,8 +10,8 @@ if 'auto_refresh' not in st.session_state:
     st.session_state.auto_refresh = False
 
 if st.session_state.auto_refresh:
-    st.markdown('<meta http-equiv="refresh" content="30">', unsafe_allow_html=True)
-    auto_status = "🔄 Auto-refresh ON (30s)"
+    st.markdown('<meta http-equiv="refresh" content="360">', unsafe_allow_html=True)
+    auto_status = "🔄 Auto-refresh ON (6 min)"
 else:
     auto_status = "⏸️ Auto-refresh OFF"
 
@@ -1132,7 +1132,7 @@ THRESHOLDS = [210.5, 215.5, 220.5, 225.5, 230.5, 235.5, 240.5, 245.5, 250.5, 255
 
 cs1, cs2 = st.columns([1, 1])
 cush_side = cs1.selectbox("Side", ["NO", "YES"], key="cush_side")
-auto_toggle = cs2.toggle("🔄 Auto-Refresh (30s)", value=st.session_state.auto_refresh, key="cush_auto")
+auto_toggle = cs2.toggle("🔄 Auto-Refresh (6 min)", value=st.session_state.auto_refresh, key="cush_auto")
 if auto_toggle != st.session_state.auto_refresh:
     st.session_state.auto_refresh = auto_toggle
     st.rerun()
