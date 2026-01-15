@@ -23,6 +23,19 @@ with st.sidebar:
     
     st.divider()
     
+    st.header("🟠 TRADE SIGNALS")
+    st.markdown("""
+    **Orange = Recommended Trade**
+    
+    🟠 **BUY YES** — Our model says temp lands here
+    
+    🟠 **BUY NO** — Our model says temp WON'T be here
+    
+    *Both can win if our forecast is right!*
+    """)
+    
+    st.divider()
+    
     st.header("📊 OUR MODEL INPUTS")
     st.markdown("""
     - Current temp
@@ -34,7 +47,7 @@ with st.sidebar:
     """)
     
     st.divider()
-    st.caption("v5.0 | Our Model vs Market")
+    st.caption("v5.1 | Our Model vs Market")
 
 # ========== CITIES (with exact settlement stations) ==========
 CITIES = {
@@ -446,55 +459,88 @@ def find_bracket_for_temp(brackets, temp):
     """Find which bracket a temperature falls into"""
     if not brackets or temp is None:
         return None
+    
     for b in brackets:
         mid = b['mid']
         if mid is None:
             continue
         range_text = b['range'].lower()
-        if "or above" in range_text:
-            if temp >= mid - 0.5:
+        
+        # Check open-ended brackets first
+        if "or above" in range_text or "above" in range_text:
+            # Extract the threshold number
+            threshold = mid - 0.5 if mid else 27
+            if temp >= threshold:
                 return b
-        elif "or below" in range_text:
-            if temp <= mid + 0.5:
+        elif "or below" in range_text or "below" in range_text:
+            threshold = mid + 0.5 if mid else 20
+            if temp <= threshold:
                 return b
         else:
-            if abs(temp - mid) <= 1.0:
+            # Regular range bracket
+            if abs(temp - mid) <= 1.5:
                 return b
-    return None
+    
+    # If no match found, find closest bracket
+    closest = None
+    min_dist = float('inf')
+    for b in brackets:
+        if b['mid']:
+            dist = abs(temp - b['mid'])
+            if dist < min_dist:
+                min_dist = dist
+                closest = b
+    return closest
 
 def get_trade_recommendations(brackets, our_temp, market_temp):
     """
     Get YES and NO trade recommendations based on our forecast vs market
     Returns: (yes_bracket, no_bracket, direction)
     """
-    if not brackets or our_temp is None or market_temp is None:
+    if not brackets or our_temp is None:
         return None, None, None
     
-    gap = our_temp - market_temp
-    
-    # Find bracket for our forecast (BUY YES on this)
+    # Always find YES bracket for our forecast
     yes_bracket = find_bracket_for_temp(brackets, our_temp)
     
-    # Find bracket to BUY NO on (opposite direction)
     no_bracket = None
     direction = None
     
-    if gap >= 2:
-        # Our model says HIGHER - buy NO on lower brackets
-        direction = "HIGHER"
-        # Find a bracket below our forecast
-        for b in brackets:
-            if b['mid'] and b['mid'] < our_temp - 2:
-                no_bracket = b
-                break
-    elif gap <= -2:
-        # Our model says LOWER - buy NO on higher brackets
-        direction = "LOWER"
-        # Find a bracket above our forecast
-        for b in reversed(brackets):
-            if b['mid'] and b['mid'] > our_temp + 2:
-                no_bracket = b
-                break
+    # Only calculate edge direction if we have market temp
+    if market_temp is not None:
+        gap = our_temp - market_temp
+        
+        if gap >= 2:
+            # Our model says HIGHER - buy NO on lower brackets
+            direction = "HIGHER"
+            # Find the lowest bracket (to fade)
+            for b in brackets:
+                if b['mid'] and b['mid'] < our_temp - 3:
+                    if "below" in b['range'].lower():
+                        no_bracket = b
+                        break
+            # If no "below" bracket, get lowest regular bracket
+            if not no_bracket:
+                for b in brackets:
+                    if b['mid'] and b['mid'] < our_temp - 3:
+                        no_bracket = b
+                        break
+                        
+        elif gap <= -2:
+            # Our model says LOWER - buy NO on higher brackets
+            direction = "LOWER"
+            # Find the highest bracket (to fade)
+            for b in reversed(brackets):
+                if b['mid'] and b['mid'] > our_temp + 3:
+                    if "above" in b['range'].lower():
+                        no_bracket = b
+                        break
+            # If no "above" bracket, get highest regular bracket
+            if not no_bracket:
+                for b in reversed(brackets):
+                    if b['mid'] and b['mid'] > our_temp + 3:
+                        no_bracket = b
+                        break
     
     return yes_bracket, no_bracket, direction
 
@@ -550,7 +596,7 @@ now_et = datetime.now(pytz.timezone('US/Eastern'))
 hour = now_et.hour
 
 st.title("🌡️ TEMP EDGE FINDER")
-st.caption(f"v5.0 — Our Model vs NWS vs Market | {now_et.strftime('%I:%M %p ET')}")
+st.caption(f"v5.1 — Our Model vs NWS vs Market | {now_et.strftime('%I:%M %p ET')}")
 
 # Timing indicator
 if 6 <= hour < 8:
@@ -713,21 +759,45 @@ with col_low:
     # Edge display
     display_edge(our_low, nws_low, market_low, "LOW")
     
-    # Recommended bracket
-    if our_low and low_brackets:
-        our_bracket = find_bracket_for_temp(low_brackets, our_low)
-        if our_bracket:
-            st.markdown(f"**🎯 BUY:** {our_bracket['range']} @ {our_bracket['yes']:.0f}¢")
+    # Get trade recommendations for LOW
+    low_yes_bracket, low_no_bracket, low_direction = get_trade_recommendations(low_brackets, our_low, market_low)
     
-    # All brackets
+    # Show YES recommendation
+    if low_yes_bracket:
+        st.markdown(f"""
+        <div style="background-color: #FF8C00; padding: 10px; border-radius: 6px; margin: 5px 0;">
+            <span style="color: white; font-weight: bold;">🟠 BUY YES: {low_yes_bracket['range']}</span><br>
+            <span style="color: white;">YES @ {low_yes_bracket['yes']:.0f}¢ | Potential return: {100 - low_yes_bracket['yes']:.0f}¢</span>
+        </div>""", unsafe_allow_html=True)
+    
+    # Show NO recommendation
+    if low_no_bracket:
+        low_no_price = 100 - low_no_bracket['yes']
+        st.markdown(f"""
+        <div style="background-color: #FF8C00; padding: 10px; border-radius: 6px; margin: 5px 0;">
+            <span style="color: white; font-weight: bold;">🟠 BUY NO: {low_no_bracket['range']}</span><br>
+            <span style="color: white;">NO @ {low_no_price:.0f}¢ | Potential return: {low_no_bracket['yes']:.0f}¢</span>
+        </div>""", unsafe_allow_html=True)
+    
+    # All brackets with highlighting
     if low_brackets:
         with st.expander("View All Brackets"):
             for b in low_brackets:
-                highlight = our_low and b['mid'] and abs(our_low - b['mid']) <= 1.5
-                if highlight:
-                    st.markdown(f"**→ {b['range']}** — YES {b['yes']:.0f}¢")
+                is_yes = low_yes_bracket and b['range'] == low_yes_bracket['range']
+                is_no = low_no_bracket and b['range'] == low_no_bracket['range']
+                
+                if is_yes:
+                    st.markdown(f"""
+                    <div style="background-color: #FF8C00; padding: 6px; border-radius: 4px; margin: 2px 0;">
+                        <span style="color: white;">🟠 YES → {b['range']} — YES {b['yes']:.0f}¢ | NO {100-b['yes']:.0f}¢</span>
+                    </div>""", unsafe_allow_html=True)
+                elif is_no:
+                    st.markdown(f"""
+                    <div style="background-color: #FF8C00; padding: 6px; border-radius: 4px; margin: 2px 0;">
+                        <span style="color: white;">🟠 NO → {b['range']} — YES {b['yes']:.0f}¢ | NO {100-b['yes']:.0f}¢</span>
+                    </div>""", unsafe_allow_html=True)
                 else:
-                    st.write(f"{b['range']} — YES {b['yes']:.0f}¢")
+                    st.write(f"{b['range']} — YES {b['yes']:.0f}¢ | NO {100-b['yes']:.0f}¢")
 
 st.divider()
 
@@ -758,6 +828,11 @@ with st.expander("📊 How Our Model Works"):
     - 🟢 ≥2° difference = Strong edge
     - 🟡 1-2° difference = Small edge
     - ⚪ <1° difference = No edge
+    
+    **🟠 Orange Trade Signals:**
+    - **BUY YES** on bracket where our model says temp will land
+    - **BUY NO** on bracket in opposite direction (hedge/confirmation)
+    - Both trades win if our forecast is correct!
     """)
 
 # ========== SETTLEMENT RULES REMINDER ==========
