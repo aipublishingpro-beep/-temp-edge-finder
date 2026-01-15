@@ -82,10 +82,10 @@ def fetch_kalshi_brackets(series_ticker):
             tl = txt.lower()
             
             if "below" in tl:
-                try: mid = int(''.join(filter(str.isdigit, txt.split('°')[0]))) - 1
+                try: mid = int(''.join(filter(str.isdigit, txt.split('°')[0])))
                 except: mid = 30
             elif "above" in tl:
-                try: mid = int(''.join(filter(str.isdigit, txt.split('°')[0]))) + 1
+                try: mid = int(''.join(filter(str.isdigit, txt.split('°')[0])))
                 except: mid = 60
             elif "to" in tl:
                 try:
