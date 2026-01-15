@@ -102,42 +102,85 @@ CITIES = {
 
 # ========== FETCH CURRENT OBSERVATIONS ==========
 def fetch_station_observations(station):
-    """Fetch current conditions from exact settlement station"""
-    url = f"https://api.weather.gov/stations/{station}/observations/latest"
+    """Fetch recent observations and find most recent VALID reading"""
+    # Fetch last 24 hours of observations instead of just "latest"
+    url = f"https://api.weather.gov/stations/{station}/observations?limit=24"
     try:
-        resp = requests.get(url, headers={"User-Agent": "TempEdge/5.0"}, timeout=10)
-        if resp.status_code == 200:
-            p = resp.json().get("properties", {})
+        resp = requests.get(url, headers={"User-Agent": "TempEdge/5.0 (contact@example.com)"}, timeout=10)
+        
+        if resp.status_code != 200:
+            return None
+        
+        features = resp.json().get("features", [])
+        
+        # Find most recent observation with valid temperature
+        for feature in features:
+            p = feature.get("properties", {})
             
             # Temperature (C to F)
-            temp_c = p.get("temperature", {}).get("value")
-            temp_f = round(temp_c * 9/5 + 32, 1) if temp_c is not None else None
+            temp_obj = p.get("temperature", {})
+            temp_c = temp_obj.get("value") if isinstance(temp_obj, dict) else None
+            
+            # Skip if no valid temperature or temp is clearly wrong (< -50 or exactly 0 when it shouldn't be)
+            if temp_c is None:
+                continue
+            
+            temp_f = round(temp_c * 9/5 + 32, 1)
+            
+            # Skip clearly bad readings (0°F exactly is suspicious unless it's actually that cold)
+            # We check if it's exactly 32°F (0°C) which might be a default/error value
+            if temp_f == 32.0 and temp_c == 0:
+                # Could be real or could be error - check dew point too
+                dew_obj = p.get("dewpoint", {})
+                dew_c = dew_obj.get("value") if isinstance(dew_obj, dict) else None
+                if dew_c is None or dew_c == 0:
+                    continue  # Likely bad data
             
             # Dew Point (C to F)
-            dew_c = p.get("dewpoint", {}).get("value")
+            dew_obj = p.get("dewpoint", {})
+            dew_c = dew_obj.get("value") if isinstance(dew_obj, dict) else None
             dew_f = round(dew_c * 9/5 + 32, 1) if dew_c is not None else None
             
-            # Wind Speed (m/s to mph)
-            wind_ms = p.get("windSpeed", {}).get("value")
-            wind_mph = round(wind_ms * 2.237, 1) if wind_ms is not None else 0
+            # Wind Speed
+            wind_obj = p.get("windSpeed", {})
+            wind_val = wind_obj.get("value") if isinstance(wind_obj, dict) else None
+            wind_unit = wind_obj.get("unitCode", "") if isinstance(wind_obj, dict) else ""
+            if wind_val is not None:
+                if "km" in wind_unit.lower():
+                    wind_mph = round(wind_val * 0.621371, 1)
+                else:
+                    wind_mph = round(wind_val * 2.237, 1)
+            else:
+                wind_mph = 0
             
-            # Cloud cover (text description)
-            cloud_text = p.get("textDescription", "").lower()
-            if "clear" in cloud_text or "sunny" in cloud_text:
+            # Cloud cover
+            cloud_text = p.get("textDescription", "") or ""
+            cloud_lower = cloud_text.lower()
+            if "clear" in cloud_lower or "sunny" in cloud_lower or "fair" in cloud_lower:
                 cloud_pct = 0
-            elif "few" in cloud_text:
+            elif "few" in cloud_lower:
                 cloud_pct = 15
-            elif "scattered" in cloud_text:
+            elif "scattered" in cloud_lower or "partly" in cloud_lower:
                 cloud_pct = 40
-            elif "broken" in cloud_text:
+            elif "broken" in cloud_lower or "mostly cloudy" in cloud_lower:
                 cloud_pct = 70
-            elif "overcast" in cloud_text or "cloudy" in cloud_text:
+            elif "overcast" in cloud_lower or "cloudy" in cloud_lower:
                 cloud_pct = 95
             else:
-                cloud_pct = 50  # Default
+                cloud_pct = 50
             
             # Observation time
             obs_time = p.get("timestamp", "")
+            
+            # Calculate how old this observation is
+            obs_age_mins = None
+            if obs_time:
+                try:
+                    obs_dt = datetime.fromisoformat(obs_time.replace('Z', '+00:00'))
+                    now_utc = datetime.now(pytz.UTC)
+                    obs_age_mins = (now_utc - obs_dt).total_seconds() / 60
+                except:
+                    pass
             
             return {
                 "temp": temp_f,
@@ -145,11 +188,34 @@ def fetch_station_observations(station):
                 "wind": wind_mph,
                 "cloud_pct": cloud_pct,
                 "cloud_text": cloud_text,
-                "obs_time": obs_time
+                "obs_time": obs_time,
+                "obs_age_mins": obs_age_mins
             }
+        
+        return None
     except Exception as e:
-        st.error(f"Station error: {e}")
-    return None
+        return None
+
+def fetch_station_observations_backup(lat, lon):
+    """Backup: fetch from nearest station using lat/lon"""
+    try:
+        # Get nearest stations
+        points_url = f"https://api.weather.gov/points/{lat},{lon}"
+        resp = requests.get(points_url, headers={"User-Agent": "TempEdge/5.0"}, timeout=10)
+        if resp.status_code == 200:
+            obs_url = resp.json().get("properties", {}).get("observationStations")
+            if obs_url:
+                stations_resp = requests.get(obs_url, headers={"User-Agent": "TempEdge/5.0"}, timeout=10)
+                if stations_resp.status_code == 200:
+                    stations = stations_resp.json().get("features", [])
+                    if stations:
+                        # Get first station's latest observation
+                        station_id = stations[0].get("properties", {}).get("stationIdentifier")
+                        if station_id:
+                            return fetch_station_observations(station_id), station_id
+    except:
+        pass
+    return None, None
 
 # ========== FETCH NWS FORECAST ==========
 def fetch_nws_forecast(office, grid_x, grid_y):
@@ -467,41 +533,71 @@ city = st.selectbox("City", list(CITIES.keys()), format_func=lambda x: CITIES[x]
 cfg = CITIES[city]
 
 # Fetch all data
+used_station = cfg['station']
+obs = None
+
 with st.spinner("Fetching station data..."):
     obs = fetch_station_observations(cfg['station'])
+    
+    # If primary station fails, try backup via lat/lon
+    if obs is None or obs.get("temp") is None:
+        backup_obs, backup_station = fetch_station_observations_backup(cfg['lat'], cfg['lon'])
+        if backup_obs and backup_obs.get("temp") is not None:
+            obs = backup_obs
+            used_station = backup_station
+    
     nws_forecast = fetch_nws_forecast(cfg['nws_office'], cfg['grid_x'], cfg['grid_y'])
     high_brackets = fetch_kalshi_brackets(cfg['high_ticker'])
     low_brackets = fetch_kalshi_brackets(cfg['low_ticker'])
 
 # ========== CURRENT CONDITIONS ==========
-st.subheader(f"📡 LIVE: {cfg['station']} Station")
+st.subheader(f"📡 LIVE: {used_station} Station")
 
-if obs:
+if obs and obs.get("temp") is not None:
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         st.metric("Current Temp", f"{obs['temp']}°F")
     with c2:
-        st.metric("Dew Point", f"{obs['dew_point']}°F" if obs['dew_point'] else "—")
+        st.metric("Dew Point", f"{obs['dew_point']}°F" if obs.get('dew_point') else "—")
     with c3:
         st.metric("Wind", f"{obs['wind']} mph")
     with c4:
         st.metric("Clouds", f"{obs['cloud_pct']}%", help=obs.get('cloud_text', ''))
     
+    # Show observation age warning
+    obs_age = obs.get('obs_age_mins')
+    if obs_age:
+        if obs_age > 120:
+            st.warning(f"⚠️ Data is {obs_age:.0f} minutes old ({obs_age/60:.1f} hrs). Station may be offline.")
+        elif obs_age > 60:
+            st.caption(f"⏱️ Observation from {obs_age:.0f} minutes ago")
+        else:
+            st.caption(f"✅ Fresh data ({obs_age:.0f} mins old)")
+    
+    # Show station used if different from primary
+    if used_station != cfg['station']:
+        st.caption(f"⚠️ Using backup station {used_station} (primary {cfg['station']} unavailable)")
+    
     # Dew point insight for LOW
-    if obs['dew_point']:
+    if obs.get('dew_point'):
         spread = obs['temp'] - obs['dew_point']
         if spread < 5:
             st.info(f"💧 **Dew Point Spread: {spread:.0f}°F** — Humid. LOW floor is ~{obs['dew_point']-2:.0f}°F")
         else:
             st.info(f"💧 **Dew Point Spread: {spread:.0f}°F** — Dry. More cooling potential tonight.")
 else:
-    st.error("❌ Cannot fetch station data")
+    st.error(f"❌ Cannot fetch station data from {cfg['station']}")
+    st.caption("Try refreshing. NWS API may be temporarily unavailable.")
 
 st.divider()
 
 # Calculate our forecasts
-our_high = calculate_our_forecast(obs, cfg['tz'], is_high=True) if obs else None
-our_low = calculate_our_forecast(obs, cfg['tz'], is_high=False) if obs else None
+our_high = None
+our_low = None
+if obs and obs.get("temp") is not None:
+    our_high = calculate_our_forecast(obs, cfg['tz'], is_high=True)
+    our_low = calculate_our_forecast(obs, cfg['tz'], is_high=False)
+
 market_high = calc_market_forecast(high_brackets)
 market_low = calc_market_forecast(low_brackets)
 nws_high = nws_forecast.get("high")
@@ -613,5 +709,20 @@ with st.expander("📋 Kalshi Settlement Rules"):
     - **Expiration:** 10:00 AM ET next day
     - **Revisions:** Post-expiration revisions don't count
     """)
+
+# ========== DEBUG INFO ==========
+with st.expander("🔧 Debug Info"):
+    st.write(f"**Primary Station:** {cfg['station']}")
+    st.write(f"**Station Used:** {used_station}")
+    st.write(f"**Obs Data Received:** {obs is not None}")
+    if obs:
+        st.write(f"**Temp:** {obs.get('temp')}°F")
+        st.write(f"**Dew Point:** {obs.get('dew_point')}°F")
+        st.write(f"**Cloud Text:** {obs.get('cloud_text')}")
+        st.write(f"**Obs Time:** {obs.get('obs_time')}")
+        st.write(f"**Obs Age:** {obs.get('obs_age_mins', 'unknown')} mins")
+    st.write(f"**NWS Forecast:** High={nws_high}, Low={nws_low}")
+    st.write(f"**Our Model:** High={our_high}, Low={our_low}")
+    st.write(f"**Market Implied:** High={market_high}, Low={market_low}")
 
 st.caption("⚠️ Not financial advice. Model is experimental.")
