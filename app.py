@@ -47,7 +47,7 @@ with st.sidebar:
     """)
     
     st.divider()
-    st.caption("v5.1 | Our Model vs Market")
+    st.caption("v5.3 | Our Model vs Market")
 
 # ========== CITIES (with exact settlement stations) ==========
 CITIES = {
@@ -390,8 +390,9 @@ def fetch_kalshi_brackets(series_ticker):
             ticker = m.get("ticker", "")
             event_ticker = m.get("event_ticker", "")
             
-            # Build Kalshi URL
-            kalshi_url = f"https://kalshi.com/markets/{series_ticker.lower()}/{ticker.lower()}"
+            # Build Kalshi URL - use the ticker directly
+            # Format: https://kalshi.com/markets/kxlowtnyc/kxlowtnyc-26jan15-t27
+            kalshi_url = f"https://kalshi.com/markets/{series_ticker.lower()}/{ticker.lower()}" if ticker else "#"
             
             if " to " in tl and "below" not in tl and "above" not in tl:
                 try:
@@ -609,7 +610,7 @@ now_et = datetime.now(pytz.timezone('US/Eastern'))
 hour = now_et.hour
 
 st.title("🌡️ TEMP EDGE FINDER")
-st.caption(f"v5.1 — Our Model vs NWS vs Market | {now_et.strftime('%I:%M %p ET')}")
+st.caption(f"v5.3 — Our Model vs NWS vs Market | {now_et.strftime('%I:%M %p ET')}")
 
 # Timing indicator
 if 6 <= hour < 8:
@@ -722,20 +723,22 @@ with col_high:
     
     # Show YES recommendation
     if yes_bracket:
+        yes_url = yes_bracket.get('url', '#')
         st.markdown(f"""
         <div style="background-color: #FF8C00; padding: 10px; border-radius: 6px; margin: 5px 0;">
             <span style="color: white; font-weight: bold;">🟠 BUY YES: {yes_bracket['range']}</span><br>
             <span style="color: white;">YES @ {yes_bracket['yes']:.0f}¢ | Potential return: {100 - yes_bracket['yes']:.0f}¢</span><br>
-            <a href="{yes_bracket.get('url', '#')}" target="_blank" style="color: #90EE90; font-weight: bold;">→ BUY ON KALSHI</a>
+            <a href="{yes_url}" target="_blank" style="color: #90EE90; font-weight: bold; text-decoration: underline;">→ BUY ON KALSHI</a>
         </div>""", unsafe_allow_html=True)
     
     if no_bracket:
         no_price = 100 - no_bracket['yes']
+        no_url = no_bracket.get('url', '#')
         st.markdown(f"""
         <div style="background-color: #FF8C00; padding: 10px; border-radius: 6px; margin: 5px 0;">
             <span style="color: white; font-weight: bold;">🟠 BUY NO: {no_bracket['range']}</span><br>
             <span style="color: white;">NO @ {no_price:.0f}¢ | Potential return: {no_bracket['yes']:.0f}¢</span><br>
-            <a href="{no_bracket.get('url', '#')}" target="_blank" style="color: #90EE90; font-weight: bold;">→ BUY ON KALSHI</a>
+            <a href="{no_url}" target="_blank" style="color: #90EE90; font-weight: bold; text-decoration: underline;">→ BUY ON KALSHI</a>
         </div>""", unsafe_allow_html=True)
     
     # All brackets
@@ -744,22 +747,24 @@ with col_high:
             for b in high_brackets:
                 is_yes = yes_bracket and b['range'] == yes_bracket['range']
                 is_no = no_bracket and b['range'] == no_bracket['range']
-                url = b.get('url', '#')
+                bracket_url = b.get('url', '#')
                 
                 if is_yes:
                     st.markdown(f"""
                     <div style="background-color: #FF8C00; padding: 6px; border-radius: 4px; margin: 2px 0;">
                         <span style="color: white;">🟠 YES → {b['range']} — YES {b['yes']:.0f}¢ | NO {100-b['yes']:.0f}¢</span>
-                        <a href="{url}" target="_blank" style="color: #90EE90; margin-left: 10px;">BUY</a>
+                        <a href="{bracket_url}" target="_blank" style="color: #90EE90; margin-left: 10px; text-decoration: underline;">BUY</a>
                     </div>""", unsafe_allow_html=True)
                 elif is_no:
                     st.markdown(f"""
                     <div style="background-color: #FF8C00; padding: 6px; border-radius: 4px; margin: 2px 0;">
                         <span style="color: white;">🟠 NO → {b['range']} — YES {b['yes']:.0f}¢ | NO {100-b['yes']:.0f}¢</span>
-                        <a href="{url}" target="_blank" style="color: #90EE90; margin-left: 10px;">BUY</a>
+                        <a href="{bracket_url}" target="_blank" style="color: #90EE90; margin-left: 10px; text-decoration: underline;">BUY</a>
                     </div>""", unsafe_allow_html=True)
                 else:
-                    st.markdown(f"{b['range']} — YES {b['yes']:.0f}¢ | NO {100-b['yes']:.0f}¢ [BUY]({url})")
+                    st.markdown(f'{b["range"]} — YES {b["yes"]:.0f}¢ | NO {100-b["yes"]:.0f}¢ <a href="{bracket_url}" target="_blank" style="color: #4CAF50;">BUY</a>', unsafe_allow_html=True)
+    else:
+        st.error("No high temp brackets available")
 
 # ========== LOW TEMP ==========
 with col_low:
@@ -780,42 +785,63 @@ with col_low:
     # Get trade recommendations for LOW
     low_yes_bracket, low_no_bracket, low_direction = get_trade_recommendations(low_brackets, our_low, market_low)
     
-    # Show YES recommendation
+    # Show YES recommendation with link
     if low_yes_bracket:
-        st.markdown(f"""
-        <div style="background-color: #FF8C00; padding: 10px; border-radius: 6px; margin: 5px 0;">
-            <span style="color: white; font-weight: bold;">🟠 BUY YES: {low_yes_bracket['range']}</span><br>
-            <span style="color: white;">YES @ {low_yes_bracket['yes']:.0f}¢ | Potential return: {100 - low_yes_bracket['yes']:.0f}¢</span>
-        </div>""", unsafe_allow_html=True)
+        low_yes_url = low_yes_bracket.get('url', '#')
+        st.markdown(
+            f'<div style="background-color: #FF8C00; padding: 10px; border-radius: 6px; margin: 5px 0;">'
+            f'<span style="color: white; font-weight: bold;">🟠 BUY YES: {low_yes_bracket["range"]}</span><br>'
+            f'<span style="color: white;">YES @ {low_yes_bracket["yes"]:.0f}¢ | Potential return: {100 - low_yes_bracket["yes"]:.0f}¢</span><br>'
+            f'<a href="{low_yes_url}" target="_blank" style="color: #90EE90; font-weight: bold; text-decoration: underline;">→ BUY ON KALSHI</a>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
     
-    # Show NO recommendation
+    # Show NO recommendation with link
     if low_no_bracket:
         low_no_price = 100 - low_no_bracket['yes']
-        st.markdown(f"""
-        <div style="background-color: #FF8C00; padding: 10px; border-radius: 6px; margin: 5px 0;">
-            <span style="color: white; font-weight: bold;">🟠 BUY NO: {low_no_bracket['range']}</span><br>
-            <span style="color: white;">NO @ {low_no_price:.0f}¢ | Potential return: {low_no_bracket['yes']:.0f}¢</span>
-        </div>""", unsafe_allow_html=True)
+        low_no_url = low_no_bracket.get('url', '#')
+        st.markdown(
+            f'<div style="background-color: #FF8C00; padding: 10px; border-radius: 6px; margin: 5px 0;">'
+            f'<span style="color: white; font-weight: bold;">🟠 BUY NO: {low_no_bracket["range"]}</span><br>'
+            f'<span style="color: white;">NO @ {low_no_price:.0f}¢ | Potential return: {low_no_bracket["yes"]:.0f}¢</span><br>'
+            f'<a href="{low_no_url}" target="_blank" style="color: #90EE90; font-weight: bold; text-decoration: underline;">→ BUY ON KALSHI</a>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
     
-    # All brackets with highlighting
+    # All brackets with highlighting and links
     if low_brackets:
         with st.expander("View All Brackets"):
             for b in low_brackets:
-                is_yes = low_yes_bracket and b['range'] == low_yes_bracket['range']
-                is_no = low_no_bracket and b['range'] == low_no_bracket['range']
+                is_yes_rec = low_yes_bracket and b['range'] == low_yes_bracket['range']
+                is_no_rec = low_no_bracket and b['range'] == low_no_bracket['range']
+                b_url = b.get('url', '#')
                 
-                if is_yes:
-                    st.markdown(f"""
-                    <div style="background-color: #FF8C00; padding: 6px; border-radius: 4px; margin: 2px 0;">
-                        <span style="color: white;">🟠 YES → {b['range']} — YES {b['yes']:.0f}¢ | NO {100-b['yes']:.0f}¢</span>
-                    </div>""", unsafe_allow_html=True)
-                elif is_no:
-                    st.markdown(f"""
-                    <div style="background-color: #FF8C00; padding: 6px; border-radius: 4px; margin: 2px 0;">
-                        <span style="color: white;">🟠 NO → {b['range']} — YES {b['yes']:.0f}¢ | NO {100-b['yes']:.0f}¢</span>
-                    </div>""", unsafe_allow_html=True)
+                if is_yes_rec:
+                    st.markdown(
+                        f'<div style="background-color: #FF8C00; padding: 6px; border-radius: 4px; margin: 2px 0;">'
+                        f'<span style="color: white;">🟠 YES → {b["range"]} — YES {b["yes"]:.0f}¢ | NO {100-b["yes"]:.0f}¢</span> '
+                        f'<a href="{b_url}" target="_blank" style="color: #90EE90; text-decoration: underline;">BUY</a>'
+                        f'</div>',
+                        unsafe_allow_html=True
+                    )
+                elif is_no_rec:
+                    st.markdown(
+                        f'<div style="background-color: #FF8C00; padding: 6px; border-radius: 4px; margin: 2px 0;">'
+                        f'<span style="color: white;">🟠 NO → {b["range"]} — YES {b["yes"]:.0f}¢ | NO {100-b["yes"]:.0f}¢</span> '
+                        f'<a href="{b_url}" target="_blank" style="color: #90EE90; text-decoration: underline;">BUY</a>'
+                        f'</div>',
+                        unsafe_allow_html=True
+                    )
                 else:
-                    st.write(f"{b['range']} — YES {b['yes']:.0f}¢ | NO {100-b['yes']:.0f}¢")
+                    st.markdown(
+                        f'{b["range"]} — YES {b["yes"]:.0f}¢ | NO {100-b["yes"]:.0f}¢ '
+                        f'<a href="{b_url}" target="_blank" style="color: #4CAF50;">BUY</a>',
+                        unsafe_allow_html=True
+                    )
+    else:
+        st.error("No low temp brackets available")
 
 st.divider()
 
