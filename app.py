@@ -9,45 +9,36 @@ st.set_page_config(page_title="Temp Edge Finder", page_icon="🌡️", layout="w
 
 # ========== SIDEBAR ==========
 with st.sidebar:
+    st.header("🔢 KALSHI ROUNDING")
+    st.markdown("""
+    **Kalshi rounds to nearest °F!**
+    
+    46.4°F → 46°F → "45-46" bracket
+    **46.5°F → 47°F → "47-48" bracket**
+    46.9°F → 47°F → "47-48" bracket
+    
+    *The .5 boundary is critical!*
+    """)
+    
+    st.divider()
+    
     st.header("🎯 EDGE COLORS")
     st.markdown("""
-    🟢 **GREEN** — Our model ≥2° different
-    → Edge exists, bet our direction
-    
-    🟡 **YELLOW** — 1-2° difference
-    → Small edge, proceed with caution
-    
-    ⚪ **GRAY** — Within ±1°
-    → No edge, skip
+    🟢 **GREEN** — ≥2° edge
+    🟡 **YELLOW** — 1-2° edge
+    ⚪ **GRAY** — No edge
     """)
     
     st.divider()
     
     st.header("🟠 TRADE SIGNALS")
     st.markdown("""
-    **Orange = Recommended Trade**
-    
-    🟠 **BUY YES** — Our model says temp lands here
-    
-    🟠 **BUY NO** — Our model says temp WON'T be here
-    
-    *Both can win if our forecast is right!*
+    🟠 **Orange** — Confident bet
+    ⚠️ **Yellow** — BORDERLINE (.4-.6)
     """)
     
     st.divider()
-    
-    st.header("📊 OUR MODEL INPUTS")
-    st.markdown("""
-    - Current temp
-    - Dew point (LOW floor)
-    - Cloud cover %
-    - Wind speed
-    - Hours to peak/sunrise
-    - Seasonal patterns
-    """)
-    
-    st.divider()
-    st.caption("v5.3 | Our Model vs Market")
+    st.caption("v5.7 | Kalshi Rounding")
 
 # ========== CITIES (with exact settlement stations) ==========
 CITIES = {
@@ -526,9 +517,12 @@ def calc_market_forecast(brackets):
     return None
 
 def find_bracket_for_temp(brackets, temp):
-    """Find which bracket a temperature falls into"""
+    """Find which bracket a temperature falls into - USING KALSHI ROUNDING"""
     if not brackets or temp is None:
         return None
+    
+    # KALSHI ROUNDS TO NEAREST INTEGER
+    temp_rounded = round(temp)
     
     for b in brackets:
         mid = b['mid']
@@ -536,31 +530,51 @@ def find_bracket_for_temp(brackets, temp):
             continue
         range_text = b['range'].lower()
         
-        # Check open-ended brackets first
+        # Parse the actual bracket range
         if "or above" in range_text or "above" in range_text:
-            # Extract the threshold number
-            threshold = mid - 0.5 if mid else 27
-            if temp >= threshold:
+            # e.g., "49° or above" means rounded temp >= 49
+            threshold = round(mid)
+            if temp_rounded >= threshold:
                 return b
         elif "or below" in range_text or "below" in range_text:
-            threshold = mid + 0.5 if mid else 20
-            if temp <= threshold:
+            # e.g., "40° or below" means rounded temp <= 40
+            threshold = round(mid)
+            if temp_rounded <= threshold:
+                return b
+        elif " to " in range_text:
+            # e.g., "47° to 48°" means rounded temp is 47 or 48
+            # Mid is 47.5, so low = 47, high = 48
+            low_val = int(mid - 0.5)
+            high_val = int(mid + 0.5)
+            if low_val <= temp_rounded <= high_val:
                 return b
         else:
-            # Regular range bracket
-            if abs(temp - mid) <= 1.5:
+            # Single degree bracket
+            if temp_rounded == round(mid):
                 return b
     
-    # If no match found, find closest bracket
+    # If no exact match, find closest bracket
     closest = None
     min_dist = float('inf')
     for b in brackets:
         if b['mid']:
-            dist = abs(temp - b['mid'])
+            dist = abs(temp_rounded - round(b['mid']))
             if dist < min_dist:
                 min_dist = dist
                 closest = b
     return closest
+
+def is_temp_borderline(temp, bracket):
+    """Check if temp is close to rounding boundary - risky"""
+    if temp is None:
+        return True
+    
+    # Check if temp is within 0.1 of .5 (rounding boundary)
+    decimal = temp % 1
+    if 0.4 <= decimal <= 0.6:
+        return True
+    
+    return False
 
 def get_trade_recommendations(brackets, our_temp, market_temp):
     """
@@ -666,7 +680,7 @@ now_et = datetime.now(pytz.timezone('US/Eastern'))
 hour = now_et.hour
 
 st.title("🌡️ TEMP EDGE FINDER")
-st.caption(f"v5.4 — Our Model vs NWS vs Market | {now_et.strftime('%I:%M %p ET')}")
+st.caption(f"v5.7 — Kalshi Rounding Rules | {now_et.strftime('%I:%M %p ET')}")
 
 # Timing indicator
 if 6 <= hour < 8:
@@ -827,15 +841,24 @@ with col_high:
     
     # Show if high is locked
     if high_locked:
-        st.success(f"✅ **HIGH LOCKED: {our_high}°F** — Already recorded today")
+        rounded_high = round(our_high)
+        # Check if we might have missed data
+        if obs and obs.get('obs_age_mins') and obs.get('obs_age_mins') > 60:
+            st.warning(f"⚠️ **HIGH ~{our_high}°F → Rounds to {rounded_high}°F** — Data gaps detected!")
+        else:
+            st.success(f"✅ **HIGH LOCKED: {our_high}°F → Rounds to {rounded_high}°F**")
     elif actual_high:
-        st.info(f"📊 Today's high so far: {actual_high}°F (could go higher)")
+        rounded_high = round(actual_high)
+        st.info(f"📊 Today's high so far: {actual_high}°F → Rounds to {rounded_high}°F")
     
     # Edge display
     display_edge(our_high, nws_high, market_high, "HIGH")
     
     # Get trade recommendations
     yes_bracket, no_bracket, direction = get_trade_recommendations(high_brackets, our_high, market_high)
+    
+    # Check if borderline - warn user
+    borderline = is_temp_borderline(our_high, yes_bracket) if yes_bracket else False
     
     # Show YES recommendation
     if yes_bracket:
@@ -895,9 +918,10 @@ with col_low:
     with c3:
         st.metric("Market Implied", f"{market_low}°F" if market_low else "—")
     
-    # Show actual low so far
+    # Show actual low so far with ROUNDING
     if actual_low:
-        st.info(f"📊 Today's low so far: {actual_low}°F — could drop more by midnight")
+        rounded_low = round(actual_low)
+        st.info(f"📊 Today's low so far: {actual_low}°F → **Rounds to {rounded_low}°F**")
     
     # Edge display
     display_edge(our_low, nws_low, market_low, "LOW")
@@ -905,17 +929,32 @@ with col_low:
     # Get trade recommendations for LOW
     low_yes_bracket, low_no_bracket, low_direction = get_trade_recommendations(low_brackets, our_low, market_low)
     
+    # Check if borderline - warn user
+    low_borderline = is_temp_borderline(our_low, low_yes_bracket) if low_yes_bracket else False
+    
     # Show YES recommendation with link
     if low_yes_bracket:
         low_yes_url = low_yes_bracket.get('url', '#')
-        st.markdown(
-            f'<div style="background-color: #FF8C00; padding: 10px; border-radius: 6px; margin: 5px 0;">'
-            f'<span style="color: white; font-weight: bold;">🟠 BUY YES: {low_yes_bracket["range"]}</span><br>'
-            f'<span style="color: white;">YES @ {low_yes_bracket["yes"]:.0f}¢ | Potential return: {100 - low_yes_bracket["yes"]:.0f}¢</span><br>'
-            f'<a href="{low_yes_url}" target="_blank" style="color: #90EE90; font-weight: bold; text-decoration: underline;">→ BUY ON KALSHI</a>'
-            f'</div>',
-            unsafe_allow_html=True
-        )
+        if low_borderline:
+            # Borderline - show yellow warning
+            st.markdown(
+                f'<div style="background-color: #856404; padding: 10px; border-radius: 6px; margin: 5px 0;">'
+                f'<span style="color: #fff3cd; font-weight: bold;">⚠️ BORDERLINE: {low_yes_bracket["range"]}</span><br>'
+                f'<span style="color: #fff3cd;">{our_low}°F is near .5 — could round either way!</span><br>'
+                f'<a href="{low_yes_url}" target="_blank" style="color: #90EE90; font-weight: bold; text-decoration: underline;">→ VIEW ON KALSHI</a>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+        else:
+            rounded_temp = round(our_low) if our_low else 0
+            st.markdown(
+                f'<div style="background-color: #FF8C00; padding: 10px; border-radius: 6px; margin: 5px 0;">'
+                f'<span style="color: white; font-weight: bold;">🟠 BUY YES: {low_yes_bracket["range"]}</span><br>'
+                f'<span style="color: white;">{our_low}°F → Rounds to {rounded_temp}°F | YES @ {low_yes_bracket["yes"]:.0f}¢</span><br>'
+                f'<a href="{low_yes_url}" target="_blank" style="color: #90EE90; font-weight: bold; text-decoration: underline;">→ BUY ON KALSHI</a>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
     
     # Show NO recommendation with link
     if low_no_bracket:
@@ -1023,4 +1062,4 @@ with st.expander("🔧 Debug Info"):
     st.write(f"**Our Model:** High={our_high}, Low={our_low}")
     st.write(f"**Market Implied:** High={market_high}, Low={market_low}")
 
-st.caption("⚠️ Not financial advice. Model is experimental.")
+st.caption("⚠️ Not financial advice. Data may have gaps — always verify on Kalshi!")
