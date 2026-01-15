@@ -40,15 +40,20 @@ with st.sidebar:
     """)
     
     st.divider()
-    st.caption("v3.1 | Quick Trade")
+    st.caption("v3.2 | High & Low Temps")
 
 # ========== CITIES ==========
 CITIES = {
-    "NYC": {"name": "New York (Central Park)", "tz": "America/New_York", "series_ticker": "KXHIGHNY", "nws_station": "KNYC"},
-    "Chicago": {"name": "Chicago (O'Hare)", "tz": "America/Chicago", "series_ticker": "KXHIGHCHI", "nws_station": "KORD"},
-    "LA": {"name": "Los Angeles (LAX)", "tz": "America/Los_Angeles", "series_ticker": "KXHIGHLA", "nws_station": "KLAX"},
-    "Miami": {"name": "Miami", "tz": "America/New_York", "series_ticker": "KXHIGHMIA", "nws_station": "KMIA"},
-    "Denver": {"name": "Denver", "tz": "America/Denver", "series_ticker": "KXHIGHDEN", "nws_station": "KDEN"},
+    "NYC": {"name": "New York (Central Park)", "tz": "America/New_York", 
+            "high_ticker": "KXHIGHNY", "low_ticker": "KXLOWNY", "nws_station": "KNYC"},
+    "Chicago": {"name": "Chicago (O'Hare)", "tz": "America/Chicago", 
+                "high_ticker": "KXHIGHCHI", "low_ticker": "KXLOWCHI", "nws_station": "KORD"},
+    "LA": {"name": "Los Angeles (LAX)", "tz": "America/Los_Angeles", 
+           "high_ticker": "KXHIGHLA", "low_ticker": "KXLOWLA", "nws_station": "KLAX"},
+    "Miami": {"name": "Miami", "tz": "America/New_York", 
+              "high_ticker": "KXHIGHMIA", "low_ticker": "KXLOWMIA", "nws_station": "KMIA"},
+    "Denver": {"name": "Denver", "tz": "America/Denver", 
+               "high_ticker": "KXHIGHDEN", "low_ticker": "KXLOWDEN", "nws_station": "KDEN"},
 }
 
 # ========== FETCH KALSHI BRACKETS ==========
@@ -129,7 +134,7 @@ now_et = datetime.now(pytz.timezone('US/Eastern'))
 hour = now_et.hour
 
 st.title("🌡️ TEMP QUICK TRADE")
-st.caption(f"v3.1 | {now_et.strftime('%I:%M %p ET')}")
+st.caption(f"v3.2 | {now_et.strftime('%I:%M %p ET')}")
 
 # ========== TIMING INDICATOR ==========
 if 6 <= hour < 8:
@@ -143,14 +148,25 @@ else:
 
 st.divider()
 
-city = st.selectbox("City", list(CITIES.keys()), format_func=lambda x: CITIES[x]['name'])
+# ========== CITY & FORECAST TYPE SELECTION ==========
+col_city, col_type = st.columns([2, 1])
+with col_city:
+    city = st.selectbox("City", list(CITIES.keys()), format_func=lambda x: CITIES[x]['name'])
+with col_type:
+    temp_type = st.radio("Forecast", ["High", "Low"], horizontal=True)
+
 cfg = CITIES[city]
 
-brackets = fetch_kalshi_brackets(cfg['series_ticker'])
+# Select the appropriate ticker based on forecast type
+ticker_key = "high_ticker" if temp_type == "High" else "low_ticker"
+brackets = fetch_kalshi_brackets(cfg[ticker_key])
 nws_temp = fetch_nws_temp(cfg['nws_station'])
 
 # ========== MARKET FORECAST (THE HIDDEN NUMBER) ==========
-st.subheader("🎯 MARKET FORECAST")
+temp_label = "HIGH" if temp_type == "High" else "LOW"
+temp_icon = "🔥" if temp_type == "High" else "❄️"
+
+st.subheader(f"{temp_icon} MARKET FORECAST ({temp_label})")
 
 if brackets:
     forecast = calc_market_forecast(brackets)
@@ -158,7 +174,7 @@ if brackets:
     
     if forecast:
         st.markdown(f"# {forecast}°F")
-        st.caption("This is what Kalshi hides until you buy a contract")
+        st.caption(f"Predicted {temp_type.lower()} temperature — what Kalshi hides until you buy")
         
         if buy_bracket:
             if buy_bracket['yes'] <= 85:
@@ -168,23 +184,23 @@ if brackets:
     else:
         st.warning("Could not calculate forecast")
 else:
-    st.error("❌ No Kalshi data available")
+    st.error(f"❌ No Kalshi data available for {temp_type.lower()} temp")
 
 st.divider()
 
 # ========== CURRENT NWS TEMP (SETTLEMENT SOURCE) ==========
-st.subheader("📡 NWS TEMP (Settlement Source)")
+st.subheader("📡 NWS CURRENT TEMP")
 
 if nws_temp:
     st.markdown(f"# {nws_temp}°F")
-    st.caption("Official source for settlement")
+    st.caption("Current reading from official settlement source")
 else:
     st.warning("NWS data unavailable")
 
 st.divider()
 
 # ========== ALL BRACKETS ==========
-st.subheader("📊 All Brackets")
+st.subheader(f"📊 All {temp_type} Temp Brackets")
 
 if brackets:
     forecast = calc_market_forecast(brackets)
@@ -194,8 +210,9 @@ if brackets:
         is_buy = buy_bracket and b['range'] == buy_bracket['range']
         
         if is_buy:
+            bg_color = "#FF8C00" if temp_type == "High" else "#1E90FF"
             st.markdown(
-                f"""<div style="background-color: #FF8C00; padding: 10px; border-radius: 8px; margin: 5px 0;">
+                f"""<div style="background-color: {bg_color}; padding: 10px; border-radius: 8px; margin: 5px 0;">
                 <span style="color: white; font-weight: bold;">{b['range']} 🎯</span>
                 <span style="color: white; font-weight: bold; margin-left: 40px;">YES {b['yes']:.0f}¢</span>
                 <span style="color: white; margin-left: 40px;">NO {100-b['yes']:.0f}¢</span>
@@ -214,8 +231,8 @@ st.divider()
 
 # ========== QUICK GUIDE ==========
 with st.expander("📖 How to Use"):
-    st.markdown("""
-    **Your Strategy:**
+    st.markdown(f"""
+    **Your Strategy ({temp_type} Temp):**
     1. Check MARKET FORECAST (free intel Kalshi hides)
     2. Buy YES on that bracket between **8-10 AM**
     3. Price rises as day confirms
@@ -224,6 +241,8 @@ with st.expander("📖 How to Use"):
     **Settlement:** NWS Climatological Report (official)
     
     **Best Entry:** 8-10 AM — forecast stable, prices cheap
+    
+    **Toggle:** Use the High/Low radio button to switch forecasts
     """)
 
 st.caption("⚠️ Not financial advice")
