@@ -45,15 +45,15 @@ with st.sidebar:
 # ========== CITIES ==========
 CITIES = {
     "NYC": {"name": "New York (Central Park)", "tz": "America/New_York", 
-            "high_ticker": "KXHIGHNY", "low_ticker": "KXLOWNY", "nws_station": "KNYC"},
+            "high_ticker": "KXHIGHNY", "low_ticker": "KXLOWTNYC", "nws_station": "KNYC"},
     "Chicago": {"name": "Chicago (O'Hare)", "tz": "America/Chicago", 
-                "high_ticker": "KXHIGHCHI", "low_ticker": "KXLOWCHI", "nws_station": "KORD"},
+                "high_ticker": "KXHIGHCHI", "low_ticker": "KXLOWTCHI", "nws_station": "KORD"},
     "LA": {"name": "Los Angeles (LAX)", "tz": "America/Los_Angeles", 
-           "high_ticker": "KXHIGHLA", "low_ticker": "KXLOWLA", "nws_station": "KLAX"},
+           "high_ticker": "KXHIGHLA", "low_ticker": "KXLOWTLAX", "nws_station": "KLAX"},
     "Miami": {"name": "Miami", "tz": "America/New_York", 
-              "high_ticker": "KXHIGHMIA", "low_ticker": "KXLOWMIA", "nws_station": "KMIA"},
+              "high_ticker": "KXHIGHMIA", "low_ticker": "KXLOWTMIA", "nws_station": "KMIA"},
     "Denver": {"name": "Denver", "tz": "America/Denver", 
-               "high_ticker": "KXHIGHDEN", "low_ticker": "KXLOWDEN", "nws_station": "KDEN"},
+               "high_ticker": "KXHIGHDEN", "low_ticker": "KXLOWTDEN", "nws_station": "KDEN"},
 }
 
 # ========== FETCH KALSHI BRACKETS ==========
