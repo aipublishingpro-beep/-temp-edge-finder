@@ -95,14 +95,26 @@ def fetch_kalshi_brackets(series_ticker):
             # Format 2: "40° or below" or "<19°"
             elif "below" in tl or "<" in txt:
                 try: 
-                    mid = int(''.join(filter(str.isdigit, txt.split('°')[0].split('<')[-1])))
-                    display = f"{int(mid)}° or below"
+                    num = int(''.join(filter(str.isdigit, txt.split('°')[0].split('<')[-1])))
+                    # "<19°" means less than 19, so "18° or below"
+                    if "<" in txt:
+                        mid = num - 1
+                        display = f"{num - 1}° or below"
+                    else:
+                        mid = num
+                        display = f"{num}° or below"
                 except: mid = 30
             # Format 3: "49° or above" or ">26°"  
             elif "above" in tl or ">" in txt:
                 try: 
-                    mid = int(''.join(filter(str.isdigit, txt.split('°')[0].split('>')[-1])))
-                    display = f"{int(mid)}° or above"
+                    num = int(''.join(filter(str.isdigit, txt.split('°')[0].split('>')[-1])))
+                    # ">26°" means greater than 26, so "27° or above"
+                    if ">" in txt:
+                        mid = num + 1
+                        display = f"{num + 1}° or above"
+                    else:
+                        mid = num
+                        display = f"{num}° or above"
                 except: mid = 60
             # Format 4: "25-26°" range style
             elif "-" in txt and "°" in txt:
