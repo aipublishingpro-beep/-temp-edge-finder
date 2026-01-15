@@ -8,54 +8,77 @@ st.set_page_config(page_title="Temp Quick Trade", page_icon="🌡️", layout="w
 
 # ========== SIDEBAR LEGEND ==========
 with st.sidebar:
+    st.header("🎯 EDGE COLORS")
+    st.markdown("""
+    🟢 **GREEN** — NWS ≥2° higher than market
+    → Buy YES on higher brackets
+    
+    🔴 **RED** — NWS ≥2° lower than market
+    → Buy YES on lower brackets
+    
+    ⚪ **GRAY** — Within ±2°
+    → No clear edge
+    """)
+    
+    st.divider()
+    
     st.header("⏰ BEST TIME TO BUY")
     st.markdown("""
     🟡 **6-8 AM** — Risky, forecast forming
-    
     🟢 **8-10 AM** — BEST TIME!
-    
     🔵 **10-12 PM** — Good, prices rising
-    
     🔴 **12 PM+** — Late, prices baked in
     """)
     
     st.divider()
-    
-    st.header("📖 STRATEGY")
-    st.markdown("""
-    1. Check **Market Forecast**
-    2. **BUY YES** on that bracket
-    3. Optional: **BUY NO** on bracket above
-    4. Sell for profit or hold
-    """)
-    
-    st.divider()
-    
-    st.header("💡 HEDGE PLAY")
-    st.markdown("""
-    If forecast = 52°F:
-    - **YES 51-52** → wins if 51-52
-    - **NO 53+** → wins if ≤52
-    
-    Both win if temp = 51-52°F!
-    """)
-    
-    st.divider()
-    st.caption("v3.3 | High & Low Temps")
+    st.caption("v4.0 | NWS Edge Finder")
 
 # ========== CITIES ==========
 CITIES = {
     "NYC": {"name": "New York (Central Park)", "tz": "America/New_York", 
-            "high_ticker": "KXHIGHNY", "low_ticker": "KXLOWTNYC", "nws_station": "KNYC"},
+            "high_ticker": "KXHIGHNY", "low_ticker": "KXLOWTNYC", "nws_station": "KNYC",
+            "nws_office": "OKX", "grid_x": 33, "grid_y": 37},
     "Chicago": {"name": "Chicago (O'Hare)", "tz": "America/Chicago", 
-                "high_ticker": "KXHIGHCHI", "low_ticker": "KXLOWTCHI", "nws_station": "KORD"},
+                "high_ticker": "KXHIGHCHI", "low_ticker": "KXLOWTCHI", "nws_station": "KORD",
+                "nws_office": "LOT", "grid_x": 65, "grid_y": 76},
     "LA": {"name": "Los Angeles (LAX)", "tz": "America/Los_Angeles", 
-           "high_ticker": "KXHIGHLA", "low_ticker": "KXLOWTLAX", "nws_station": "KLAX"},
+           "high_ticker": "KXHIGHLA", "low_ticker": "KXLOWTLAX", "nws_station": "KLAX",
+           "nws_office": "LOX", "grid_x": 149, "grid_y": 48},
     "Miami": {"name": "Miami", "tz": "America/New_York", 
-              "high_ticker": "KXHIGHMIA", "low_ticker": "KXLOWTMIA", "nws_station": "KMIA"},
+              "high_ticker": "KXHIGHMIA", "low_ticker": "KXLOWTMIA", "nws_station": "KMIA",
+              "nws_office": "MFL", "grid_x": 109, "grid_y": 50},
     "Denver": {"name": "Denver", "tz": "America/Denver", 
-               "high_ticker": "KXHIGHDEN", "low_ticker": "KXLOWTDEN", "nws_station": "KDEN"},
+               "high_ticker": "KXHIGHDEN", "low_ticker": "KXLOWTDEN", "nws_station": "KDEN",
+               "nws_office": "BOU", "grid_x": 62, "grid_y": 60},
 }
+
+# ========== FETCH NWS FORECAST (HIGH/LOW) ==========
+def fetch_nws_forecast(office, grid_x, grid_y):
+    """Fetch NWS forecast for high and low temps"""
+    url = f"https://api.weather.gov/gridpoints/{office}/{grid_x},{grid_y}/forecast"
+    try:
+        resp = requests.get(url, headers={"User-Agent": "TempQuick/4.0"}, timeout=10)
+        if resp.status_code == 200:
+            periods = resp.json().get("properties", {}).get("periods", [])
+            if periods:
+                # Find today's forecast
+                today_high = None
+                today_low = None
+                
+                for period in periods[:4]:  # Check first 4 periods
+                    name = period.get("name", "").lower()
+                    temp = period.get("temperature")
+                    is_day = period.get("isDaytime", True)
+                    
+                    if is_day and today_high is None:
+                        today_high = temp
+                    elif not is_day and today_low is None:
+                        today_low = temp
+                
+                return {"high": today_high, "low": today_low}
+    except Exception as e:
+        pass
+    return {"high": None, "low": None}
 
 # ========== FETCH KALSHI BRACKETS ==========
 def fetch_kalshi_brackets(series_ticker):
@@ -83,7 +106,6 @@ def fetch_kalshi_brackets(series_ticker):
             display = txt
             tl = txt.lower()
             
-            # Format 1: "47° to 48°" or "to" style
             if " to " in tl and "below" not in tl and "above" not in tl:
                 try:
                     p = txt.replace('°','').lower().split('to')
@@ -92,11 +114,9 @@ def fetch_kalshi_brackets(series_ticker):
                     mid = (low + high) / 2
                     display = f"{low}° to {high}°"
                 except: mid = 45
-            # Format 2: "40° or below" or "<19°"
             elif "below" in tl or "<" in txt:
                 try: 
                     num = int(''.join(filter(str.isdigit, txt.split('°')[0].split('<')[-1])))
-                    # "<19°" means less than 19, so "18° or below"
                     if "<" in txt:
                         mid = num - 1
                         display = f"{num - 1}° or below"
@@ -104,11 +124,9 @@ def fetch_kalshi_brackets(series_ticker):
                         mid = num
                         display = f"{num}° or below"
                 except: mid = 30
-            # Format 3: "49° or above" or ">26°"  
             elif "above" in tl or ">" in txt:
                 try: 
                     num = int(''.join(filter(str.isdigit, txt.split('°')[0].split('>')[-1])))
-                    # ">26°" means greater than 26, so "27° or above"
                     if ">" in txt:
                         mid = num + 1
                         display = f"{num + 1}° or above"
@@ -116,7 +134,6 @@ def fetch_kalshi_brackets(series_ticker):
                         mid = num
                         display = f"{num}° or above"
                 except: mid = 60
-            # Format 4: "25-26°" range style
             elif "-" in txt and "°" in txt:
                 try:
                     match = re.search(r'(\d+)-(\d+)°', txt)
@@ -136,7 +153,7 @@ def fetch_kalshi_brackets(series_ticker):
         return None
 
 def calc_market_forecast(brackets):
-    """Calculate weighted average forecast based on all bracket probabilities"""
+    """Calculate weighted average forecast from market brackets"""
     if not brackets:
         return None
     
@@ -144,19 +161,16 @@ def calc_market_forecast(brackets):
     total_prob = 0
     
     for b in brackets:
-        prob = b['yes'] / 100  # Convert cents to probability
+        prob = b['yes'] / 100
         mid = b['mid']
         
         if mid is None or prob <= 0:
             continue
         
-        # Adjust midpoints for open-ended brackets
         range_text = b['range'].lower()
         if "or above" in range_text:
-            # If 27° or above, estimate actual temp ~2-3° higher
             adjusted_mid = mid + 2.5
         elif "or below" in range_text:
-            # If 19° or below, estimate actual temp ~2-3° lower
             adjusted_mid = mid - 2.5
         else:
             adjusted_mid = mid
@@ -168,16 +182,40 @@ def calc_market_forecast(brackets):
         return round(weighted_sum / total_prob, 1)
     return None
 
-def get_buy_bracket(brackets):
-    if not brackets:
-        return None
-    return max(brackets, key=lambda b: b['yes'])
+def get_edge_bracket(brackets, nws_temp, market_temp):
+    """Find the bracket to buy based on NWS vs Market gap"""
+    if not brackets or nws_temp is None or market_temp is None:
+        return None, None
+    
+    gap = nws_temp - market_temp
+    
+    # Find bracket containing NWS forecast
+    best_bracket = None
+    for b in brackets:
+        mid = b['mid']
+        if mid is None:
+            continue
+        range_text = b['range'].lower()
+        
+        # Check if NWS temp falls in this bracket
+        if "or above" in range_text:
+            if nws_temp >= mid - 0.5:
+                best_bracket = b
+        elif "or below" in range_text:
+            if nws_temp <= mid + 0.5:
+                best_bracket = b
+        else:
+            # Regular bracket - check if within range
+            if abs(nws_temp - mid) <= 1.5:
+                best_bracket = b
+    
+    return best_bracket, gap
 
 # ========== FETCH NWS CURRENT TEMP ==========
 def fetch_nws_temp(station):
     url = f"https://api.weather.gov/stations/{station}/observations/latest"
     try:
-        resp = requests.get(url, headers={"User-Agent": "TempQuick/3.0"}, timeout=10)
+        resp = requests.get(url, headers={"User-Agent": "TempQuick/4.0"}, timeout=10)
         if resp.status_code == 200:
             p = resp.json().get("properties", {})
             tc = p.get("temperature", {}).get("value")
@@ -192,9 +230,9 @@ now_et = datetime.now(pytz.timezone('US/Eastern'))
 hour = now_et.hour
 
 st.title("🌡️ TEMP QUICK TRADE")
-st.caption(f"v3.3 | {now_et.strftime('%I:%M %p ET')}")
+st.caption(f"v4.0 — NWS Edge Finder | {now_et.strftime('%I:%M %p ET')}")
 
-# ========== TIMING INDICATOR ==========
+# Timing indicator
 if 6 <= hour < 8:
     st.warning("⏳ **6-8 AM** — Forecast forming. Prices cheapest but risky.")
 elif 8 <= hour < 10:
@@ -206,112 +244,159 @@ else:
 
 st.divider()
 
-# ========== CITY SELECTION ==========
+# City selection
 city = st.selectbox("City", list(CITIES.keys()), format_func=lambda x: CITIES[x]['name'])
 cfg = CITIES[city]
 
-# Fetch both high and low brackets
+# Fetch all data
 high_brackets = fetch_kalshi_brackets(cfg['high_ticker'])
 low_brackets = fetch_kalshi_brackets(cfg['low_ticker'])
-nws_temp = fetch_nws_temp(cfg['nws_station'])
+nws_forecast = fetch_nws_forecast(cfg['nws_office'], cfg['grid_x'], cfg['grid_y'])
+nws_current = fetch_nws_temp(cfg['nws_station'])
 
-# ========== CURRENT NWS TEMP ==========
-st.subheader("📡 NWS CURRENT TEMP")
-if nws_temp:
-    st.markdown(f"# {nws_temp}°F")
-    st.caption("Current reading from official settlement source")
+# Current temp display
+st.subheader("📡 CURRENT TEMP")
+if nws_current:
+    st.markdown(f"### {nws_current}°F")
 else:
-    st.warning("NWS data unavailable")
+    st.warning("NWS current temp unavailable")
 
 st.divider()
 
-# ========== TWO COLUMN LAYOUT: HIGH & LOW ==========
+# ========== TWO COLUMN LAYOUT ==========
 col_high, col_low = st.columns(2)
 
-# ========== HIGH TEMP COLUMN ==========
+# ========== HIGH TEMP ==========
 with col_high:
-    st.subheader("🔥 HIGH TEMP FORECAST")
+    st.subheader("🔥 HIGH TEMP")
     
+    nws_high = nws_forecast.get("high")
+    market_high = calc_market_forecast(high_brackets) if high_brackets else None
+    
+    # Display comparison
+    c1, c2 = st.columns(2)
+    with c1:
+        st.metric("NWS Forecast", f"{nws_high}°F" if nws_high else "—")
+    with c2:
+        st.metric("Market Implied", f"{market_high}°F" if market_high else "—")
+    
+    # Calculate edge and display
+    if nws_high and market_high:
+        gap = nws_high - market_high
+        
+        if gap >= 2:
+            st.markdown(f"""
+            <div style="background-color: #155724; padding: 15px; border-radius: 8px; margin: 10px 0;">
+                <span style="color: #d4edda; font-size: 24px; font-weight: bold;">🟢 +{gap:.1f}° EDGE</span><br>
+                <span style="color: #d4edda;">NWS higher than market → BUY HIGHER BRACKETS</span>
+            </div>""", unsafe_allow_html=True)
+        elif gap <= -2:
+            st.markdown(f"""
+            <div style="background-color: #721c24; padding: 15px; border-radius: 8px; margin: 10px 0;">
+                <span style="color: #f8d7da; font-size: 24px; font-weight: bold;">🔴 {gap:.1f}° EDGE</span><br>
+                <span style="color: #f8d7da;">NWS lower than market → BUY LOWER BRACKETS</span>
+            </div>""", unsafe_allow_html=True)
+        else:
+            st.markdown(f"""
+            <div style="background-color: #383d41; padding: 15px; border-radius: 8px; margin: 10px 0;">
+                <span style="color: #e2e3e5; font-size: 24px; font-weight: bold;">⚪ {gap:+.1f}° NO EDGE</span><br>
+                <span style="color: #e2e3e5;">Market aligned with NWS forecast</span>
+            </div>""", unsafe_allow_html=True)
+    
+    # Show brackets
     if high_brackets:
-        high_forecast = calc_market_forecast(high_brackets)
-        high_buy = get_buy_bracket(high_brackets)
-        
-        if high_forecast:
-            st.markdown(f"# {high_forecast}°F")
-            st.caption("Weighted average from all brackets")
-            
-            if high_buy:
-                confidence = high_buy['yes']
-                if confidence <= 85:
-                    st.success(f"→ BUY YES: **{high_buy['range']}** @ {confidence:.0f}¢ ({confidence:.0f}% likely)")
+        with st.expander("View All Brackets"):
+            for b in high_brackets:
+                # Highlight bracket containing NWS forecast
+                if nws_high and b['mid']:
+                    in_bracket = abs(nws_high - b['mid']) <= 1.5
+                    if "above" in b['range'].lower() and nws_high >= b['mid'] - 0.5:
+                        in_bracket = True
+                    if "below" in b['range'].lower() and nws_high <= b['mid'] + 0.5:
+                        in_bracket = True
                 else:
-                    st.warning(f"⚠️ No edge — {high_buy['range']} @ {confidence:.0f}¢ ({confidence:.0f}% likely)")
-        
-        st.markdown("**All High Temp Brackets:**")
-        for b in high_brackets:
-            is_buy = high_buy and b['range'] == high_buy['range']
-            if is_buy:
-                st.markdown(
-                    f"""<div style="background-color: #FF8C00; padding: 8px; border-radius: 6px; margin: 4px 0;">
-                    <span style="color: white; font-weight: bold;">🎯 {b['range']}</span><br>
-                    <span style="color: white;">YES {b['yes']:.0f}¢ ({b['yes']:.0f}%) | NO {100-b['yes']:.0f}¢</span>
-                    </div>""",
-                    unsafe_allow_html=True
-                )
-            else:
-                st.write(f"{b['range']} — YES {b['yes']:.0f}¢ ({b['yes']:.0f}%) | NO {100-b['yes']:.0f}¢")
+                    in_bracket = False
+                
+                if in_bracket:
+                    st.markdown(f"**🎯 {b['range']}** — YES {b['yes']:.0f}¢")
+                else:
+                    st.write(f"{b['range']} — YES {b['yes']:.0f}¢")
     else:
-        st.error("❌ No high temp data available")
+        st.error("No high temp data")
 
-# ========== LOW TEMP COLUMN ==========
+# ========== LOW TEMP ==========
 with col_low:
-    st.subheader("❄️ LOW TEMP FORECAST")
+    st.subheader("❄️ LOW TEMP")
     
+    nws_low = nws_forecast.get("low")
+    market_low = calc_market_forecast(low_brackets) if low_brackets else None
+    
+    # Display comparison
+    c1, c2 = st.columns(2)
+    with c1:
+        st.metric("NWS Forecast", f"{nws_low}°F" if nws_low else "—")
+    with c2:
+        st.metric("Market Implied", f"{market_low}°F" if market_low else "—")
+    
+    # Calculate edge and display
+    if nws_low and market_low:
+        gap = nws_low - market_low
+        
+        if gap >= 2:
+            st.markdown(f"""
+            <div style="background-color: #155724; padding: 15px; border-radius: 8px; margin: 10px 0;">
+                <span style="color: #d4edda; font-size: 24px; font-weight: bold;">🟢 +{gap:.1f}° EDGE</span><br>
+                <span style="color: #d4edda;">NWS higher than market → BUY HIGHER BRACKETS</span>
+            </div>""", unsafe_allow_html=True)
+        elif gap <= -2:
+            st.markdown(f"""
+            <div style="background-color: #721c24; padding: 15px; border-radius: 8px; margin: 10px 0;">
+                <span style="color: #f8d7da; font-size: 24px; font-weight: bold;">🔴 {gap:.1f}° EDGE</span><br>
+                <span style="color: #f8d7da;">NWS lower than market → BUY LOWER BRACKETS</span>
+            </div>""", unsafe_allow_html=True)
+        else:
+            st.markdown(f"""
+            <div style="background-color: #383d41; padding: 15px; border-radius: 8px; margin: 10px 0;">
+                <span style="color: #e2e3e5; font-size: 24px; font-weight: bold;">⚪ {gap:+.1f}° NO EDGE</span><br>
+                <span style="color: #e2e3e5;">Market aligned with NWS forecast</span>
+            </div>""", unsafe_allow_html=True)
+    
+    # Show brackets
     if low_brackets:
-        low_forecast = calc_market_forecast(low_brackets)
-        low_buy = get_buy_bracket(low_brackets)
-        
-        if low_forecast:
-            st.markdown(f"# {low_forecast}°F")
-            st.caption("Weighted average from all brackets")
-            
-            if low_buy:
-                confidence = low_buy['yes']
-                if confidence <= 85:
-                    st.success(f"→ BUY YES: **{low_buy['range']}** @ {confidence:.0f}¢ ({confidence:.0f}% likely)")
+        with st.expander("View All Brackets"):
+            for b in low_brackets:
+                if nws_low and b['mid']:
+                    in_bracket = abs(nws_low - b['mid']) <= 1.5
+                    if "above" in b['range'].lower() and nws_low >= b['mid'] - 0.5:
+                        in_bracket = True
+                    if "below" in b['range'].lower() and nws_low <= b['mid'] + 0.5:
+                        in_bracket = True
                 else:
-                    st.warning(f"⚠️ No edge — {low_buy['range']} @ {confidence:.0f}¢ ({confidence:.0f}% likely)")
-        
-        st.markdown("**All Low Temp Brackets:**")
-        for b in low_brackets:
-            is_buy = low_buy and b['range'] == low_buy['range']
-            if is_buy:
-                st.markdown(
-                    f"""<div style="background-color: #FF8C00; padding: 8px; border-radius: 6px; margin: 4px 0;">
-                    <span style="color: white; font-weight: bold;">🎯 {b['range']}</span><br>
-                    <span style="color: white;">YES {b['yes']:.0f}¢ ({b['yes']:.0f}%) | NO {100-b['yes']:.0f}¢</span>
-                    </div>""",
-                    unsafe_allow_html=True
-                )
-            else:
-                st.write(f"{b['range']} — YES {b['yes']:.0f}¢ ({b['yes']:.0f}%) | NO {100-b['yes']:.0f}¢")
+                    in_bracket = False
+                
+                if in_bracket:
+                    st.markdown(f"**🎯 {b['range']}** — YES {b['yes']:.0f}¢")
+                else:
+                    st.write(f"{b['range']} — YES {b['yes']:.0f}¢")
     else:
-        st.error("❌ No low temp data available")
+        st.error("No low temp data")
 
 st.divider()
 
-# ========== QUICK GUIDE ==========
-with st.expander("📖 How to Use"):
+# Quick guide
+with st.expander("📖 How This Works"):
     st.markdown("""
-    **Your Strategy:**
-    1. Check both HIGH and LOW forecasts
-    2. Buy YES on orange-highlighted brackets between **8-10 AM**
-    3. Price rises as day confirms
-    4. Sell for profit or hold to settlement
+    **Edge = NWS Forecast vs Market Implied Price**
     
-    **Settlement:** NWS Climatological Report (official)
+    - **NWS Forecast**: What the settlement source predicts
+    - **Market Implied**: Probability-weighted average from Kalshi
+    - **Gap ≥2°**: Potential mispricing opportunity
     
-    **Best Entry:** 8-10 AM — forecast stable, prices cheap
+    🟢 **GREEN**: NWS says higher → buy higher brackets
+    🔴 **RED**: NWS says lower → buy lower brackets
+    ⚪ **GRAY**: No significant gap → no clear edge
+    
+    **Settlement**: NWS Climatological Report (official)
     """)
 
 st.caption("⚠️ Not financial advice")
