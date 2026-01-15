@@ -9,36 +9,17 @@ st.set_page_config(page_title="Temp Edge Finder", page_icon="🌡️", layout="w
 
 # ========== SIDEBAR ==========
 with st.sidebar:
-    st.header("🔢 KALSHI ROUNDING")
+    st.header("🟠 BUY YES")
     st.markdown("""
-    **Kalshi rounds to nearest °F!**
+    One bracket wins.
     
-    46.4°F → 46°F → "45-46" bracket
-    **46.5°F → 47°F → "47-48" bracket**
-    46.9°F → 47°F → "47-48" bracket
+    We pick it.
     
-    *The .5 boundary is critical!*
+    You buy it.
     """)
     
     st.divider()
-    
-    st.header("🎯 EDGE COLORS")
-    st.markdown("""
-    🟢 **GREEN** — ≥2° edge
-    🟡 **YELLOW** — 1-2° edge
-    ⚪ **GRAY** — No edge
-    """)
-    
-    st.divider()
-    
-    st.header("🟠 TRADE SIGNALS")
-    st.markdown("""
-    🟠 **Orange** — Confident bet
-    ⚠️ **Yellow** — BORDERLINE (.4-.6)
-    """)
-    
-    st.divider()
-    st.caption("v5.7 | Kalshi Rounding")
+    st.caption("v6.0")
 
 # ========== CITIES (with exact settlement stations) ==========
 CITIES = {
@@ -630,57 +611,43 @@ def get_trade_recommendations(brackets, our_temp, market_temp):
 
 # ========== DISPLAY EDGE BOX ==========
 def display_edge(our_forecast, nws_forecast, market_forecast, label):
-    """Display edge comparison with color coding"""
+    """Display edge indicator - simple colors only"""
     if our_forecast is None:
-        st.warning(f"Cannot calculate {label} forecast")
         return
     
-    # Calculate edges
-    vs_nws = our_forecast - nws_forecast if nws_forecast else None
-    vs_market = our_forecast - market_forecast if market_forecast else None
-    
-    # Determine edge magnitude (use vs market as primary)
-    edge = vs_market if vs_market is not None else vs_nws
+    # Calculate edge vs market
+    edge = our_forecast - market_forecast if market_forecast is not None else None
     
     if edge is None:
-        color = "#383d41"
-        text_color = "#e2e3e5"
-        icon = "⚪"
-        edge_text = "NO DATA"
-        action = "Cannot compare"
+        return
     elif abs(edge) >= 2:
-        color = "#155724"
-        text_color = "#d4edda"
-        icon = "🟢"
-        direction = "HIGHER" if edge > 0 else "LOWER"
-        edge_text = f"{edge:+.0f}° EDGE"
-        action = f"Our model says {direction} → BUY {direction} BRACKETS"
+        st.markdown(
+            f'<div style="background-color: #155724; padding: 10px; border-radius: 8px; margin: 10px 0;">'
+            f'<span style="color: #d4edda; font-size: 20px; font-weight: bold;">🟢 EDGE FOUND</span>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
     elif abs(edge) >= 1:
-        color = "#856404"
-        text_color = "#fff3cd"
-        icon = "🟡"
-        direction = "HIGHER" if edge > 0 else "LOWER"
-        edge_text = f"{edge:+.0f}° SMALL EDGE"
-        action = f"Slight {direction.lower()} lean, proceed with caution"
+        st.markdown(
+            f'<div style="background-color: #856404; padding: 10px; border-radius: 8px; margin: 10px 0;">'
+            f'<span style="color: #fff3cd; font-size: 20px; font-weight: bold;">🟡 SMALL EDGE</span>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
     else:
-        color = "#383d41"
-        text_color = "#e2e3e5"
-        icon = "⚪"
-        edge_text = f"{edge:+.0f}° NO EDGE"
-        action = "Market is fairly priced"
-    
-    st.markdown(f"""
-    <div style="background-color: {color}; padding: 15px; border-radius: 8px; margin: 10px 0;">
-        <span style="color: {text_color}; font-size: 24px; font-weight: bold;">{icon} {edge_text}</span><br>
-        <span style="color: {text_color};">{action}</span>
-    </div>""", unsafe_allow_html=True)
+        st.markdown(
+            f'<div style="background-color: #383d41; padding: 10px; border-radius: 8px; margin: 10px 0;">'
+            f'<span style="color: #e2e3e5; font-size: 20px; font-weight: bold;">⚪ NO EDGE</span>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
 
 # ========== MAIN ==========
 now_et = datetime.now(pytz.timezone('US/Eastern'))
 hour = now_et.hour
 
 st.title("🌡️ TEMP EDGE FINDER")
-st.caption(f"v5.7 — Kalshi Rounding Rules | {now_et.strftime('%I:%M %p ET')}")
+st.caption(f"v6.0 | {now_et.strftime('%I:%M %p ET')}")
 
 # Timing indicator
 if 6 <= hour < 8:
@@ -719,54 +686,11 @@ with st.spinner("Fetching station data..."):
     high_brackets = fetch_kalshi_brackets(cfg['high_ticker'])
     low_brackets = fetch_kalshi_brackets(cfg['low_ticker'])
 
-# ========== CURRENT CONDITIONS ==========
-st.subheader(f"📡 LIVE: {used_station} Station")
-
+# ========== CURRENT CONDITIONS (simplified) ==========
 if obs and obs.get("temp") is not None:
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.metric("Current Temp", f"{obs['temp']}°F")
-    with c2:
-        st.metric("Dew Point", f"{obs['dew_point']}°F" if obs.get('dew_point') else "—")
-    with c3:
-        st.metric("Wind", f"{obs['wind']} mph")
-    with c4:
-        st.metric("Clouds", f"{obs['cloud_pct']}%", help=obs.get('cloud_text', ''))
-    
-    # Show TODAY'S actual high/low recorded
-    if actual_high or actual_low:
-        c1, c2 = st.columns(2)
-        with c1:
-            if actual_high:
-                st.metric("📈 Today's High (so far)", f"{actual_high}°F")
-        with c2:
-            if actual_low:
-                st.metric("📉 Today's Low (so far)", f"{actual_low}°F")
-    
-    # Show observation age warning
-    obs_age = obs.get('obs_age_mins')
-    if obs_age:
-        if obs_age > 120:
-            st.warning(f"⚠️ Data is {obs_age:.0f} minutes old ({obs_age/60:.1f} hrs). Station may be offline.")
-        elif obs_age > 60:
-            st.caption(f"⏱️ Observation from {obs_age:.0f} minutes ago")
-        else:
-            st.caption(f"✅ Fresh data ({obs_age:.0f} mins old)")
-    
-    # Show station used if different from primary
-    if used_station != cfg['station']:
-        st.caption(f"⚠️ Using backup station {used_station} (primary {cfg['station']} unavailable)")
-    
-    # Dew point insight for LOW
-    if obs.get('dew_point'):
-        spread = obs['temp'] - obs['dew_point']
-        if spread < 5:
-            st.info(f"💧 **Dew Point Spread: {spread:.0f}°F** — Humid. LOW floor is ~{obs['dew_point']-2:.0f}°F")
-        else:
-            st.info(f"💧 **Dew Point Spread: {spread:.0f}°F** — Dry. More cooling potential tonight.")
+    st.metric("📡 Current Temp", f"{obs['temp']}°F")
 else:
-    st.error(f"❌ Cannot fetch station data from {cfg['station']}")
-    st.caption("Try refreshing. NWS API may be temporarily unavailable.")
+    st.warning("📡 Station data unavailable")
 
 st.divider()
 
@@ -909,20 +833,6 @@ with col_high:
 with col_low:
     st.subheader("❄️ LOW TEMP")
     
-    # Three forecasts comparison
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.metric("🎯 OUR MODEL", f"{our_low}°F" if our_low else "—")
-    with c2:
-        st.metric("NWS Forecast", f"{nws_low}°F" if nws_low else "—")
-    with c3:
-        st.metric("Market Implied", f"{market_low}°F" if market_low else "—")
-    
-    # Show actual low so far with ROUNDING
-    if actual_low:
-        rounded_low = round(actual_low)
-        st.info(f"📊 Today's low so far: {actual_low}°F → **Rounds to {rounded_low}°F**")
-    
     # Edge display
     display_edge(our_low, nws_low, market_low, "LOW")
     
@@ -932,70 +842,45 @@ with col_low:
     # Check if borderline - warn user
     low_borderline = is_temp_borderline(our_low, low_yes_bracket) if low_yes_bracket else False
     
-    # Show YES recommendation with link
+    # Show ONLY the YES recommendation
     if low_yes_bracket:
         low_yes_url = low_yes_bracket.get('url', '#')
         if low_borderline:
-            # Borderline - show yellow warning
             st.markdown(
                 f'<div style="background-color: #856404; padding: 10px; border-radius: 6px; margin: 5px 0;">'
                 f'<span style="color: #fff3cd; font-weight: bold;">⚠️ BORDERLINE: {low_yes_bracket["range"]}</span><br>'
-                f'<span style="color: #fff3cd;">{our_low}°F is near .5 — could round either way!</span><br>'
                 f'<a href="{low_yes_url}" target="_blank" style="color: #90EE90; font-weight: bold; text-decoration: underline;">→ VIEW ON KALSHI</a>'
                 f'</div>',
                 unsafe_allow_html=True
             )
         else:
-            rounded_temp = round(our_low) if our_low else 0
             st.markdown(
                 f'<div style="background-color: #FF8C00; padding: 10px; border-radius: 6px; margin: 5px 0;">'
                 f'<span style="color: white; font-weight: bold;">🟠 BUY YES: {low_yes_bracket["range"]}</span><br>'
-                f'<span style="color: white;">{our_low}°F → Rounds to {rounded_temp}°F | YES @ {low_yes_bracket["yes"]:.0f}¢</span><br>'
+                f'<span style="color: white;">YES @ {low_yes_bracket["yes"]:.0f}¢</span><br>'
                 f'<a href="{low_yes_url}" target="_blank" style="color: #90EE90; font-weight: bold; text-decoration: underline;">→ BUY ON KALSHI</a>'
                 f'</div>',
                 unsafe_allow_html=True
             )
     
-    # Show NO recommendation with link
-    if low_no_bracket:
-        low_no_price = 100 - low_no_bracket['yes']
-        low_no_url = low_no_bracket.get('url', '#')
-        st.markdown(
-            f'<div style="background-color: #FF8C00; padding: 10px; border-radius: 6px; margin: 5px 0;">'
-            f'<span style="color: white; font-weight: bold;">🟠 BUY NO: {low_no_bracket["range"]}</span><br>'
-            f'<span style="color: white;">NO @ {low_no_price:.0f}¢ | Potential return: {low_no_bracket["yes"]:.0f}¢</span><br>'
-            f'<a href="{low_no_url}" target="_blank" style="color: #90EE90; font-weight: bold; text-decoration: underline;">→ BUY ON KALSHI</a>'
-            f'</div>',
-            unsafe_allow_html=True
-        )
-    
-    # All brackets with highlighting and links
+    # All brackets
     if low_brackets:
         with st.expander("View All Brackets"):
             for b in low_brackets:
                 is_yes_rec = low_yes_bracket and b['range'] == low_yes_bracket['range']
-                is_no_rec = low_no_bracket and b['range'] == low_no_bracket['range']
                 b_url = b.get('url', '#')
                 
                 if is_yes_rec:
                     st.markdown(
                         f'<div style="background-color: #FF8C00; padding: 6px; border-radius: 4px; margin: 2px 0;">'
-                        f'<span style="color: white;">🟠 YES → {b["range"]} — YES {b["yes"]:.0f}¢ | NO {100-b["yes"]:.0f}¢</span> '
-                        f'<a href="{b_url}" target="_blank" style="color: #90EE90; text-decoration: underline;">BUY</a>'
-                        f'</div>',
-                        unsafe_allow_html=True
-                    )
-                elif is_no_rec:
-                    st.markdown(
-                        f'<div style="background-color: #FF8C00; padding: 6px; border-radius: 4px; margin: 2px 0;">'
-                        f'<span style="color: white;">🟠 NO → {b["range"]} — YES {b["yes"]:.0f}¢ | NO {100-b["yes"]:.0f}¢</span> '
+                        f'<span style="color: white;">🟠 {b["range"]} — YES {b["yes"]:.0f}¢</span> '
                         f'<a href="{b_url}" target="_blank" style="color: #90EE90; text-decoration: underline;">BUY</a>'
                         f'</div>',
                         unsafe_allow_html=True
                     )
                 else:
                     st.markdown(
-                        f'{b["range"]} — YES {b["yes"]:.0f}¢ | NO {100-b["yes"]:.0f}¢ '
+                        f'{b["range"]} — YES {b["yes"]:.0f}¢ '
                         f'<a href="{b_url}" target="_blank" style="color: #4CAF50;">BUY</a>',
                         unsafe_allow_html=True
                     )
@@ -1004,62 +889,4 @@ with col_low:
 
 st.divider()
 
-# ========== MODEL EXPLANATION ==========
-with st.expander("📊 How Our Model Works"):
-    st.markdown("""
-    **HIGH TEMP MODEL:**
-    ```
-    Forecast = Current Temp + Heating Potential
-    
-    Heating Potential = Hours to Peak × Base Rate × Cloud Factor × Wind Factor
-    - Clear skies = more heating
-    - Light wind = more heating
-    - Winter cap: +12°F max
-    ```
-    
-    **LOW TEMP MODEL:**
-    ```
-    Forecast = MAX(Projected Cooling, Dew Point Floor)
-    
-    - Dew Point sets the FLOOR (temp rarely drops below)
-    - Clear skies = more cooling
-    - Light wind = more cooling
-    - Cloudy/windy = stays warmer
-    ```
-    
-    **Edge Detection:**
-    - 🟢 ≥2° difference = Strong edge
-    - 🟡 1-2° difference = Small edge
-    - ⚪ <1° difference = No edge
-    
-    **🟠 Orange Trade Signals:**
-    - **BUY YES** on bracket where our model says temp will land
-    - **BUY NO** on bracket in opposite direction (hedge/confirmation)
-    - Both trades win if our forecast is correct!
-    """)
-
-# ========== SETTLEMENT RULES REMINDER ==========
-with st.expander("📋 Kalshi Settlement Rules"):
-    st.markdown("""
-    - **Source:** NWS official station (first non-preliminary report)
-    - **Precision:** Full precision, no rounding
-    - **Expiration:** 10:00 AM ET next day
-    - **Revisions:** Post-expiration revisions don't count
-    """)
-
-# ========== DEBUG INFO ==========
-with st.expander("🔧 Debug Info"):
-    st.write(f"**Primary Station:** {cfg['station']}")
-    st.write(f"**Station Used:** {used_station}")
-    st.write(f"**Obs Data Received:** {obs is not None}")
-    if obs:
-        st.write(f"**Temp:** {obs.get('temp')}°F")
-        st.write(f"**Dew Point:** {obs.get('dew_point')}°F")
-        st.write(f"**Cloud Text:** {obs.get('cloud_text')}")
-        st.write(f"**Obs Time:** {obs.get('obs_time')}")
-        st.write(f"**Obs Age:** {obs.get('obs_age_mins', 'unknown')} mins")
-    st.write(f"**NWS Forecast:** High={nws_high}, Low={nws_low}")
-    st.write(f"**Our Model:** High={our_high}, Low={our_low}")
-    st.write(f"**Market Implied:** High={market_high}, Low={market_low}")
-
-st.caption("⚠️ Not financial advice. Data may have gaps — always verify on Kalshi!")
+st.caption("⚠️ Not financial advice")
