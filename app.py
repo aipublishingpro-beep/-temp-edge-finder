@@ -386,6 +386,13 @@ def fetch_kalshi_brackets(series_ticker):
             display = txt
             tl = txt.lower()
             
+            # Get market ticker for URL
+            ticker = m.get("ticker", "")
+            event_ticker = m.get("event_ticker", "")
+            
+            # Build Kalshi URL
+            kalshi_url = f"https://kalshi.com/markets/{series_ticker.lower()}/{ticker.lower()}"
+            
             if " to " in tl and "below" not in tl and "above" not in tl:
                 try:
                     p = txt.replace('°','').lower().split('to')
@@ -425,7 +432,13 @@ def fetch_kalshi_brackets(series_ticker):
             
             yb, ya = m.get("yes_bid", 0), m.get("yes_ask", 0)
             yp = (yb + ya) / 2 if yb and ya else ya or yb or 0
-            brackets.append({"range": display, "mid": mid, "yes": yp})
+            brackets.append({
+                "range": display, 
+                "mid": mid, 
+                "yes": yp,
+                "ticker": ticker,
+                "url": kalshi_url
+            })
         
         brackets.sort(key=lambda x: x['mid'] or 0)
         return brackets
@@ -707,12 +720,13 @@ with col_high:
     # Get trade recommendations
     yes_bracket, no_bracket, direction = get_trade_recommendations(high_brackets, our_high, market_high)
     
-    # Show recommendations
+    # Show YES recommendation
     if yes_bracket:
         st.markdown(f"""
         <div style="background-color: #FF8C00; padding: 10px; border-radius: 6px; margin: 5px 0;">
             <span style="color: white; font-weight: bold;">🟠 BUY YES: {yes_bracket['range']}</span><br>
-            <span style="color: white;">YES @ {yes_bracket['yes']:.0f}¢ | Potential return: {100 - yes_bracket['yes']:.0f}¢</span>
+            <span style="color: white;">YES @ {yes_bracket['yes']:.0f}¢ | Potential return: {100 - yes_bracket['yes']:.0f}¢</span><br>
+            <a href="{yes_bracket.get('url', '#')}" target="_blank" style="color: #90EE90; font-weight: bold;">→ BUY ON KALSHI</a>
         </div>""", unsafe_allow_html=True)
     
     if no_bracket:
@@ -720,7 +734,8 @@ with col_high:
         st.markdown(f"""
         <div style="background-color: #FF8C00; padding: 10px; border-radius: 6px; margin: 5px 0;">
             <span style="color: white; font-weight: bold;">🟠 BUY NO: {no_bracket['range']}</span><br>
-            <span style="color: white;">NO @ {no_price:.0f}¢ | Potential return: {no_bracket['yes']:.0f}¢</span>
+            <span style="color: white;">NO @ {no_price:.0f}¢ | Potential return: {no_bracket['yes']:.0f}¢</span><br>
+            <a href="{no_bracket.get('url', '#')}" target="_blank" style="color: #90EE90; font-weight: bold;">→ BUY ON KALSHI</a>
         </div>""", unsafe_allow_html=True)
     
     # All brackets
@@ -729,19 +744,22 @@ with col_high:
             for b in high_brackets:
                 is_yes = yes_bracket and b['range'] == yes_bracket['range']
                 is_no = no_bracket and b['range'] == no_bracket['range']
+                url = b.get('url', '#')
                 
                 if is_yes:
                     st.markdown(f"""
                     <div style="background-color: #FF8C00; padding: 6px; border-radius: 4px; margin: 2px 0;">
                         <span style="color: white;">🟠 YES → {b['range']} — YES {b['yes']:.0f}¢ | NO {100-b['yes']:.0f}¢</span>
+                        <a href="{url}" target="_blank" style="color: #90EE90; margin-left: 10px;">BUY</a>
                     </div>""", unsafe_allow_html=True)
                 elif is_no:
                     st.markdown(f"""
                     <div style="background-color: #FF8C00; padding: 6px; border-radius: 4px; margin: 2px 0;">
                         <span style="color: white;">🟠 NO → {b['range']} — YES {b['yes']:.0f}¢ | NO {100-b['yes']:.0f}¢</span>
+                        <a href="{url}" target="_blank" style="color: #90EE90; margin-left: 10px;">BUY</a>
                     </div>""", unsafe_allow_html=True)
                 else:
-                    st.write(f"{b['range']} — YES {b['yes']:.0f}¢ | NO {100-b['yes']:.0f}¢")
+                    st.markdown(f"{b['range']} — YES {b['yes']:.0f}¢ | NO {100-b['yes']:.0f}¢ [BUY]({url})")
 
 # ========== LOW TEMP ==========
 with col_low:
