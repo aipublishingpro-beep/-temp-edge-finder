@@ -462,6 +462,42 @@ def find_bracket_for_temp(brackets, temp):
                 return b
     return None
 
+def get_trade_recommendations(brackets, our_temp, market_temp):
+    """
+    Get YES and NO trade recommendations based on our forecast vs market
+    Returns: (yes_bracket, no_bracket, direction)
+    """
+    if not brackets or our_temp is None or market_temp is None:
+        return None, None, None
+    
+    gap = our_temp - market_temp
+    
+    # Find bracket for our forecast (BUY YES on this)
+    yes_bracket = find_bracket_for_temp(brackets, our_temp)
+    
+    # Find bracket to BUY NO on (opposite direction)
+    no_bracket = None
+    direction = None
+    
+    if gap >= 2:
+        # Our model says HIGHER - buy NO on lower brackets
+        direction = "HIGHER"
+        # Find a bracket below our forecast
+        for b in brackets:
+            if b['mid'] and b['mid'] < our_temp - 2:
+                no_bracket = b
+                break
+    elif gap <= -2:
+        # Our model says LOWER - buy NO on higher brackets
+        direction = "LOWER"
+        # Find a bracket above our forecast
+        for b in reversed(brackets):
+            if b['mid'] and b['mid'] > our_temp + 2:
+                no_bracket = b
+                break
+    
+    return yes_bracket, no_bracket, direction
+
 # ========== DISPLAY EDGE BOX ==========
 def display_edge(our_forecast, nws_forecast, market_forecast, label):
     """Display edge comparison with color coding"""
@@ -622,21 +658,44 @@ with col_high:
     # Edge display
     display_edge(our_high, nws_high, market_high, "HIGH")
     
-    # Recommended bracket
-    if our_high and high_brackets:
-        our_bracket = find_bracket_for_temp(high_brackets, our_high)
-        if our_bracket:
-            st.markdown(f"**🎯 BUY:** {our_bracket['range']} @ {our_bracket['yes']:.0f}¢")
+    # Get trade recommendations
+    yes_bracket, no_bracket, direction = get_trade_recommendations(high_brackets, our_high, market_high)
+    
+    # Show recommendations
+    if yes_bracket:
+        st.markdown(f"""
+        <div style="background-color: #FF8C00; padding: 10px; border-radius: 6px; margin: 5px 0;">
+            <span style="color: white; font-weight: bold;">🟠 BUY YES: {yes_bracket['range']}</span><br>
+            <span style="color: white;">YES @ {yes_bracket['yes']:.0f}¢ | Potential return: {100 - yes_bracket['yes']:.0f}¢</span>
+        </div>""", unsafe_allow_html=True)
+    
+    if no_bracket:
+        no_price = 100 - no_bracket['yes']
+        st.markdown(f"""
+        <div style="background-color: #FF8C00; padding: 10px; border-radius: 6px; margin: 5px 0;">
+            <span style="color: white; font-weight: bold;">🟠 BUY NO: {no_bracket['range']}</span><br>
+            <span style="color: white;">NO @ {no_price:.0f}¢ | Potential return: {no_bracket['yes']:.0f}¢</span>
+        </div>""", unsafe_allow_html=True)
     
     # All brackets
     if high_brackets:
         with st.expander("View All Brackets"):
             for b in high_brackets:
-                highlight = our_high and b['mid'] and abs(our_high - b['mid']) <= 1.5
-                if highlight:
-                    st.markdown(f"**→ {b['range']}** — YES {b['yes']:.0f}¢")
+                is_yes = yes_bracket and b['range'] == yes_bracket['range']
+                is_no = no_bracket and b['range'] == no_bracket['range']
+                
+                if is_yes:
+                    st.markdown(f"""
+                    <div style="background-color: #FF8C00; padding: 6px; border-radius: 4px; margin: 2px 0;">
+                        <span style="color: white;">🟠 YES → {b['range']} — YES {b['yes']:.0f}¢ | NO {100-b['yes']:.0f}¢</span>
+                    </div>""", unsafe_allow_html=True)
+                elif is_no:
+                    st.markdown(f"""
+                    <div style="background-color: #FF8C00; padding: 6px; border-radius: 4px; margin: 2px 0;">
+                        <span style="color: white;">🟠 NO → {b['range']} — YES {b['yes']:.0f}¢ | NO {100-b['yes']:.0f}¢</span>
+                    </div>""", unsafe_allow_html=True)
                 else:
-                    st.write(f"{b['range']} — YES {b['yes']:.0f}¢")
+                    st.write(f"{b['range']} — YES {b['yes']:.0f}¢ | NO {100-b['yes']:.0f}¢")
 
 # ========== LOW TEMP ==========
 with col_low:
