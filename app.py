@@ -136,10 +136,37 @@ def fetch_kalshi_brackets(series_ticker):
         return None
 
 def calc_market_forecast(brackets):
+    """Calculate weighted average forecast based on all bracket probabilities"""
     if not brackets:
         return None
-    buy_bracket = max(brackets, key=lambda b: b['yes'])
-    return buy_bracket['mid']
+    
+    weighted_sum = 0
+    total_prob = 0
+    
+    for b in brackets:
+        prob = b['yes'] / 100  # Convert cents to probability
+        mid = b['mid']
+        
+        if mid is None or prob <= 0:
+            continue
+        
+        # Adjust midpoints for open-ended brackets
+        range_text = b['range'].lower()
+        if "or above" in range_text:
+            # If 27° or above, estimate actual temp ~2-3° higher
+            adjusted_mid = mid + 2.5
+        elif "or below" in range_text:
+            # If 19° or below, estimate actual temp ~2-3° lower
+            adjusted_mid = mid - 2.5
+        else:
+            adjusted_mid = mid
+        
+        weighted_sum += prob * adjusted_mid
+        total_prob += prob
+    
+    if total_prob > 0:
+        return round(weighted_sum / total_prob, 1)
+    return None
 
 def get_buy_bracket(brackets):
     if not brackets:
@@ -211,13 +238,14 @@ with col_high:
         
         if high_forecast:
             st.markdown(f"# {high_forecast}°F")
-            st.caption("Predicted high temperature")
+            st.caption("Weighted average from all brackets")
             
             if high_buy:
-                if high_buy['yes'] <= 85:
-                    st.success(f"→ BUY YES: **{high_buy['range']}** @ {high_buy['yes']:.0f}¢")
+                confidence = high_buy['yes']
+                if confidence <= 85:
+                    st.success(f"→ BUY YES: **{high_buy['range']}** @ {confidence:.0f}¢ ({confidence:.0f}% likely)")
                 else:
-                    st.warning(f"⚠️ No edge — {high_buy['range']} @ {high_buy['yes']:.0f}¢")
+                    st.warning(f"⚠️ No edge — {high_buy['range']} @ {confidence:.0f}¢ ({confidence:.0f}% likely)")
         
         st.markdown("**All High Temp Brackets:**")
         for b in high_brackets:
@@ -226,12 +254,12 @@ with col_high:
                 st.markdown(
                     f"""<div style="background-color: #FF8C00; padding: 8px; border-radius: 6px; margin: 4px 0;">
                     <span style="color: white; font-weight: bold;">🎯 {b['range']}</span><br>
-                    <span style="color: white;">YES {b['yes']:.0f}¢ | NO {100-b['yes']:.0f}¢</span>
+                    <span style="color: white;">YES {b['yes']:.0f}¢ ({b['yes']:.0f}%) | NO {100-b['yes']:.0f}¢</span>
                     </div>""",
                     unsafe_allow_html=True
                 )
             else:
-                st.write(f"{b['range']} — YES {b['yes']:.0f}¢ | NO {100-b['yes']:.0f}¢")
+                st.write(f"{b['range']} — YES {b['yes']:.0f}¢ ({b['yes']:.0f}%) | NO {100-b['yes']:.0f}¢")
     else:
         st.error("❌ No high temp data available")
 
@@ -245,13 +273,14 @@ with col_low:
         
         if low_forecast:
             st.markdown(f"# {low_forecast}°F")
-            st.caption("Predicted low temperature")
+            st.caption("Weighted average from all brackets")
             
             if low_buy:
-                if low_buy['yes'] <= 85:
-                    st.success(f"→ BUY YES: **{low_buy['range']}** @ {low_buy['yes']:.0f}¢")
+                confidence = low_buy['yes']
+                if confidence <= 85:
+                    st.success(f"→ BUY YES: **{low_buy['range']}** @ {confidence:.0f}¢ ({confidence:.0f}% likely)")
                 else:
-                    st.warning(f"⚠️ No edge — {low_buy['range']} @ {low_buy['yes']:.0f}¢")
+                    st.warning(f"⚠️ No edge — {low_buy['range']} @ {confidence:.0f}¢ ({confidence:.0f}% likely)")
         
         st.markdown("**All Low Temp Brackets:**")
         for b in low_brackets:
@@ -260,12 +289,12 @@ with col_low:
                 st.markdown(
                     f"""<div style="background-color: #FF8C00; padding: 8px; border-radius: 6px; margin: 4px 0;">
                     <span style="color: white; font-weight: bold;">🎯 {b['range']}</span><br>
-                    <span style="color: white;">YES {b['yes']:.0f}¢ | NO {100-b['yes']:.0f}¢</span>
+                    <span style="color: white;">YES {b['yes']:.0f}¢ ({b['yes']:.0f}%) | NO {100-b['yes']:.0f}¢</span>
                     </div>""",
                     unsafe_allow_html=True
                 )
             else:
-                st.write(f"{b['range']} — YES {b['yes']:.0f}¢ | NO {100-b['yes']:.0f}¢")
+                st.write(f"{b['range']} — YES {b['yes']:.0f}¢ ({b['yes']:.0f}%) | NO {100-b['yes']:.0f}¢")
     else:
         st.error("❌ No low temp data available")
 
