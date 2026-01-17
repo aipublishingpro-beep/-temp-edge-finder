@@ -29,6 +29,19 @@ with st.sidebar:
     """)
     
     st.divider()
+    
+    st.header("📊 SPREAD GUIDE")
+    st.markdown("""
+    🟢 **< 10¢** — Tight, can exit anytime
+    
+    🟡 **10-20¢** — Medium, harder to exit
+    
+    🔴 **> 20¢** — Wide, hold to settlement
+    
+    *Spread = Ask - Bid*
+    """)
+    
+    st.divider()
     st.caption("v4.0 | High + Low Temps")
 
 # ========== CITY CONFIGS ==========
@@ -123,6 +136,7 @@ def fetch_kalshi_brackets(series_ticker):
             yes_ask = m.get("yes_ask", 0) or 0  # Price to BUY YES
             yes_bid = m.get("yes_bid", 0) or 0  # Price to SELL YES
             yes_price = yes_ask if yes_ask > 0 else yes_bid  # Show buy price
+            spread = yes_ask - yes_bid if (yes_ask and yes_bid) else 0
             
             subtitle = m.get("subtitle", "") or m.get("title", "")
             ticker = m.get("ticker", "")
@@ -158,6 +172,9 @@ def fetch_kalshi_brackets(series_ticker):
             brackets.append({
                 "range": range_text,
                 "yes": yes_price,
+                "yes_ask": yes_ask,
+                "yes_bid": yes_bid,
+                "spread": spread,
                 "mid": mid,
                 "ticker": ticker,
                 "url": url
@@ -305,11 +322,24 @@ with col_high:
         
         # Buy recommendation
         if high_buy:
+            spread = high_buy.get('spread', 0)
             if high_buy['yes'] <= 85:
+                # Spread warning
+                if spread >= 20:
+                    spread_color = "#FF4444"
+                    spread_warn = f"⚠️ WIDE SPREAD: {spread}¢ — Hold to settlement only!"
+                elif spread >= 10:
+                    spread_color = "#FFA500"
+                    spread_warn = f"⚡ Spread: {spread}¢ — Hard to exit early"
+                else:
+                    spread_color = "#32CD32"
+                    spread_warn = f"✅ Tight spread: {spread}¢"
+                
                 st.markdown(
                     f'<div style="background-color: #FF8C00; padding: 12px; border-radius: 8px; margin: 10px 0;">'
                     f'<span style="color: white; font-size: 18px; font-weight: bold;">🎯 BUY YES: {high_buy["range"]}</span><br>'
-                    f'<span style="color: white;">YES @ {high_buy["yes"]:.0f}¢</span><br>'
+                    f'<span style="color: white;">YES @ {high_buy["yes"]:.0f}¢ (bid: {high_buy.get("yes_bid", 0):.0f}¢)</span><br>'
+                    f'<span style="color: {spread_color}; font-size: 12px;">{spread_warn}</span><br>'
                     f'<a href="{high_buy["url"]}" target="_blank" style="color: #90EE90; font-weight: bold;">→ BUY ON KALSHI</a>'
                     f'</div>',
                     unsafe_allow_html=True
@@ -321,10 +351,12 @@ with col_high:
         with st.expander("View All HIGH Brackets"):
             for b in high_brackets:
                 is_buy = high_buy and b['range'] == high_buy['range']
+                spread = b.get('spread', 0)
+                spread_icon = "🔴" if spread >= 20 else "🟡" if spread >= 10 else "🟢"
                 if is_buy:
-                    st.markdown(f"**🎯 {b['range']}** — YES {b['yes']:.0f}¢")
+                    st.markdown(f"**🎯 {b['range']}** — ASK {b['yes']:.0f}¢ / BID {b.get('yes_bid',0):.0f}¢ {spread_icon}")
                 else:
-                    st.write(f"{b['range']} — YES {b['yes']:.0f}¢")
+                    st.write(f"{b['range']} — ASK {b['yes']:.0f}¢ / BID {b.get('yes_bid',0):.0f}¢ {spread_icon}")
     else:
         st.error("❌ No HIGH temp markets found for today")
 
@@ -348,11 +380,24 @@ with col_low:
         
         # Buy recommendation
         if low_buy:
+            spread = low_buy.get('spread', 0)
             if low_buy['yes'] <= 85:
+                # Spread warning
+                if spread >= 20:
+                    spread_color = "#FF4444"
+                    spread_warn = f"⚠️ WIDE SPREAD: {spread}¢ — Hold to settlement only!"
+                elif spread >= 10:
+                    spread_color = "#FFA500"
+                    spread_warn = f"⚡ Spread: {spread}¢ — Hard to exit early"
+                else:
+                    spread_color = "#32CD32"
+                    spread_warn = f"✅ Tight spread: {spread}¢"
+                
                 st.markdown(
                     f'<div style="background-color: #1E90FF; padding: 12px; border-radius: 8px; margin: 10px 0;">'
                     f'<span style="color: white; font-size: 18px; font-weight: bold;">🎯 BUY YES: {low_buy["range"]}</span><br>'
-                    f'<span style="color: white;">YES @ {low_buy["yes"]:.0f}¢</span><br>'
+                    f'<span style="color: white;">YES @ {low_buy["yes"]:.0f}¢ (bid: {low_buy.get("yes_bid", 0):.0f}¢)</span><br>'
+                    f'<span style="color: {spread_color}; font-size: 12px;">{spread_warn}</span><br>'
                     f'<a href="{low_buy["url"]}" target="_blank" style="color: #90EE90; font-weight: bold;">→ BUY ON KALSHI</a>'
                     f'</div>',
                     unsafe_allow_html=True
@@ -364,10 +409,12 @@ with col_low:
         with st.expander("View All LOW Brackets"):
             for b in low_brackets:
                 is_buy = low_buy and b['range'] == low_buy['range']
+                spread = b.get('spread', 0)
+                spread_icon = "🔴" if spread >= 20 else "🟡" if spread >= 10 else "🟢"
                 if is_buy:
-                    st.markdown(f"**🎯 {b['range']}** — YES {b['yes']:.0f}¢")
+                    st.markdown(f"**🎯 {b['range']}** — ASK {b['yes']:.0f}¢ / BID {b.get('yes_bid',0):.0f}¢ {spread_icon}")
                 else:
-                    st.write(f"{b['range']} — YES {b['yes']:.0f}¢")
+                    st.write(f"{b['range']} — ASK {b['yes']:.0f}¢ / BID {b.get('yes_bid',0):.0f}¢ {spread_icon}")
     else:
         st.error("❌ No LOW temp markets found for today")
 
