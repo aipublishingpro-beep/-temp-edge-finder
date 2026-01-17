@@ -124,7 +124,9 @@ def fetch_kalshi_brackets(series_ticker):
             
             subtitle = m.get("subtitle", "") or m.get("title", "")
             ticker = m.get("ticker", "")
-            url = f"https://kalshi.com/markets/{ticker.lower()}"
+            event_ticker = m.get("event_ticker", "")
+            # Use event page URL (shows all brackets) - more reliable
+            url = f"https://kalshi.com/events/{event_ticker}" if event_ticker else f"https://kalshi.com/markets/{ticker}"
             
             # Parse temperature range
             mid = None
