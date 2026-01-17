@@ -118,9 +118,11 @@ def fetch_kalshi_brackets(series_ticker):
         
         brackets = []
         for m in today_markets:
-            yes_bid = m.get("yes_bid", 0) or 0
-            yes_ask = m.get("yes_ask", 100) or 100
-            yes_price = (yes_bid + yes_ask) / 2 if yes_bid else yes_ask
+            # YES ASK = what you PAY to buy YES (this is what matters)
+            # YES BID = what you GET if you sell YES
+            yes_ask = m.get("yes_ask", 0) or 0  # Price to BUY YES
+            yes_bid = m.get("yes_bid", 0) or 0  # Price to SELL YES
+            yes_price = yes_ask if yes_ask > 0 else yes_bid  # Show buy price
             
             subtitle = m.get("subtitle", "") or m.get("title", "")
             ticker = m.get("ticker", "")
